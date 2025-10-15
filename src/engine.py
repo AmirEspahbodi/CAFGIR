@@ -7,132 +7,160 @@ from src.optimizer.sam import SAM
 from src.data.dataset import create_dataloaders
 
 class Trainer:
-    """The main training engine that orchestrates the entire curriculum."""
-    def __init__(self, model, criterion, config):
-        self.model = model.to(config.DEVICE)
-        self.criterion = criterion.to(config.DEVICE)
+    def __init__(self, config):
         self.config = config
-        self.device = config.DEVICE
+        self.model = EmbeddingModel(config).to(config.DEVICE)
+        self.loss_fn = HybridLoss(config)
+        self.optimizer = None # Initialized in stages
+        self.scheduler = None # Initialized in stages
 
-    def train_one_epoch(self, dataloader, optimizer, use_sam=False):
+    def _get_optimizer(self, stage_config):
+        # Differential learning rates
+        param_groups = [
+            {'params': self.model.backbone.parameters(), 'lr': stage_config.get('base_lr', stage_config['lr'])},
+            {'params': self.model.cbam_stages.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
+            {'params': self.model.pwca.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
+            {'params': self.model.embedding_head.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
+            {'params': self.model.arcface_head.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
+        ]
+        
+        base_optimizer = optim.AdamW(param_groups, weight_decay=self.config.WEIGHT_DECAY)
+        
+        # Use SAM for stages 2 and 3
+        if 'base_lr' in stage_config:
+            return SAM(self.model.parameters(), base_optimizer, rho=self.config.SAM_RHO)
+        else:
+            return base_optimizer
+
+    def _train_one_epoch(self, dataloader):
         self.model.train()
-        total_loss = 0.0
+        train_loss = 0.0
         progress_bar = tqdm(dataloader, desc="Training", leave=False)
 
-        for anchor_img, labels, distractor_img in progress_bar:
-            anchor_img, labels, distractor_img = \
-                anchor_img.to(self.device), labels.to(self.device), distractor_img.to(self.device)
+        for images, labels, distractor_images in progress_bar:
+            images, labels, distractor_images = images.to(self.config.DEVICE), labels.to(self.config.DEVICE), distractor_images.to(self.config.DEVICE)
 
-            if use_sam:
-                # First forward/backward pass for SAM
-                outputs = self.model(anchor_img, labels, distractor_img) # <-- Pass labels here
-                loss = self.criterion(outputs, labels)
+            if isinstance(self.optimizer, SAM):
+                # First forward-backward pass for SAM
+                outputs = self.model(images, labels, distractor_images)
+                loss = self.loss_fn(outputs['embedding'], outputs['logits'], labels)
                 loss.backward()
-                optimizer.first_step(zero_grad=True)
+                self.optimizer.first_step(zero_grad=True)
 
-                # Second forward/backward pass for SAM
-                outputs = self.model(anchor_img, labels, distractor_img) # <-- and here
-                self.criterion(outputs, labels).backward()
-                optimizer.second_step(zero_grad=True)
+                # Second forward-backward pass for SAM
+                outputs_2 = self.model(images, labels, distractor_images)
+                loss_2 = self.loss_fn(outputs_2['embedding'], outputs_2['logits'], labels)
+                loss_2.backward()
+                self.optimizer.second_step(zero_grad=True)
+                
+                loss_val = loss_2.item()
             else:
-                optimizer.zero_grad()
-                outputs = self.model(anchor_img, labels, distractor_img) # <-- and here
-                loss = self.criterion(outputs, labels)
+                self.optimizer.zero_grad()
+                outputs = self.model(images, labels, distractor_images)
+                loss = self.loss_fn(outputs['embedding'], outputs['logits'], labels)
                 loss.backward()
-                optimizer.step()
+                self.optimizer.step()
+                loss_val = loss.item()
 
-            total_loss += loss.item()
-            progress_bar.set_postfix(loss=loss.item())
+            train_loss += loss_val
+            progress_bar.set_postfix(loss=loss_val)
+        
+        return train_loss / len(dataloader)
 
-        return total_loss / len(dataloader)
-    
-    @torch.no_grad()
-    def evaluate(self, dataloader):
+    def _validate_one_epoch(self, dataloader):
         self.model.eval()
-        total_loss = 0.0
-        for imgs, labels in dataloader:
-            imgs, labels = imgs.to(self.device), labels.to(self.device)
-            outputs = self.model(imgs, labels) # <-- Pass labels here too
-            # Use the classification part of the loss for validation
-            loss = self.criterion.classification_loss(outputs['logits'], labels)
-            total_loss += loss.item()
-        return total_loss / len(dataloader)
-    
+        val_loss = 0.0
+        all_embeddings = []
+        all_labels = []
+        progress_bar = tqdm(dataloader, desc="Validation", leave=False)
+
+        with torch.no_grad():
+            for images, labels, _ in progress_bar:
+                images, labels = images.to(self.config.DEVICE), labels.to(self.config.DEVICE)
+                outputs = self.model(images, labels)
+                loss = self.loss_fn(outputs['embedding'], outputs['logits'], labels)
+                val_loss += loss.item()
+
+                # =================== FIX IS HERE ===================
+                # Move tensors to CPU before appending to the list.
+                # This frees up GPU VRAM and prevents the memory leak.
+                all_embeddings.append(outputs['embedding'].cpu())
+                all_labels.append(labels.cpu())
+                # ===================================================
+
+        # Here you would typically calculate metrics like mAP, Recall@K, etc.
+        # For now, we just return the loss.
+        # all_embeddings = torch.cat(all_embeddings)
+        # all_labels = torch.cat(all_labels)
+
+        return val_loss / len(dataloader)
 
 
     def run_training_curriculum(self):
-        """Executes the full multi-stage training curriculum."""
         print("--- Starting Training Curriculum ---")
 
         # --- Stage 1: Head Warm-up ---
         print("\n--- STAGE 1: Head Warm-up ---")
-        self.model.freeze_backbone()
         stage1_config = {
+            'epochs': self.config.STAGE1_EPOCHS,
+            'lr': self.config.STAGE1_LR,
             'img_size': self.config.STAGE1_IMG_SIZE,
             'batch_size': self.config.STAGE1_BATCH_SIZE,
             'aug_strength': self.config.STAGE1_AUG_STRENGTH
         }
         train_loader, val_loader = create_dataloaders(self.config, stage1_config)
-        optimizer = optim.AdamW(
-            filter(lambda p: p.requires_grad, self.model.parameters()), 
-            lr=self.config.STAGE1_LR
-        )
-        for epoch in range(self.config.STAGE1_EPOCHS):
-            train_loss = self.train_one_epoch(train_loader, optimizer, use_sam=False)
-            val_loss = self.evaluate(val_loader)
-            print(f"Epoch {epoch+1}/{self.config.STAGE1_EPOCHS} -> Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        self.model.freeze_backbone()
+        print("Freezing backbone.")
+        self.optimizer = self._get_optimizer(stage1_config)
+        
+        for epoch in range(stage1_config['epochs']):
+            print(f"Epoch {epoch+1}/{stage1_config['epochs']}")
+            train_loss = self._train_one_epoch(train_loader)
+            val_loss = self._validate_one_epoch(val_loader)
+            print(f"Stage 1 -> Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
         # --- Stage 2: Early Full Fine-Tuning ---
-        print("\n--- STAGE 2: Early Full Fine-Tuning with SAM ---")
-        self.model.unfreeze_backbone()
+        print("\n--- STAGE 2: Early Full Fine-Tuning ---")
         stage2_config = {
+            'epochs': self.config.STAGE2_EPOCHS,
+            'base_lr': self.config.STAGE2_BASE_LR,
+            'head_lr': self.config.STAGE2_HEAD_LR,
             'img_size': self.config.STAGE2_IMG_SIZE,
             'batch_size': self.config.STAGE2_BATCH_SIZE,
             'aug_strength': self.config.STAGE2_AUG_STRENGTH
         }
         train_loader, val_loader = create_dataloaders(self.config, stage2_config)
-        param_groups = [
-            {'params': self.model.backbone.parameters(), 'lr': self.config.STAGE2_LR_BACKBONE},
-            {'params': self.model.cbam_stages.parameters(), 'lr': self.config.STAGE2_LR_HEAD},
-            {'params': self.model.pwca.parameters(), 'lr': self.config.STAGE2_LR_HEAD},
-            {'params': self.model.embedding_head.parameters(), 'lr': self.config.STAGE2_LR_HEAD},
-            {'params': self.model.arcface_head.parameters(), 'lr': self.config.STAGE2_LR_HEAD},
-        ]
-        base_optimizer = optim.AdamW
-        optimizer = SAM(param_groups, base_optimizer, rho=self.config.SAM_RHO)
-        for epoch in range(self.config.STAGE2_EPOCHS):
-            train_loss = self.train_one_epoch(train_loader, optimizer, use_sam=True)
-            val_loss = self.evaluate(val_loader)
-            print(f"Epoch {epoch+1}/{self.config.STAGE2_EPOCHS} -> Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        self.model.unfreeze_backbone()
+        print("Unfreezing backbone.")
+        self.optimizer = self._get_optimizer(stage2_config)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage2_config['epochs'])
+
+        for epoch in range(stage2_config['epochs']):
+            print(f"Epoch {epoch+1}/{stage2_config['epochs']}")
+            train_loss = self._train_one_epoch(train_loader)
+            val_loss = self._validate_one_epoch(val_loader)
+            self.scheduler.step()
+            print(f"Stage 2 -> Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
         # --- Stage 3: Final High-Resolution Polishing ---
-        print("\n--- STAGE 3: Final Polishing with SAM and Scheduler ---")
+        print("\n--- STAGE 3: Final High-Resolution Polishing ---")
         stage3_config = {
+            'epochs': self.config.STAGE3_EPOCHS,
+            'base_lr': self.config.STAGE3_BASE_LR,
+            'head_lr': self.config.STAGE3_HEAD_LR,
             'img_size': self.config.STAGE3_IMG_SIZE,
             'batch_size': self.config.STAGE3_BATCH_SIZE,
             'aug_strength': self.config.STAGE3_AUG_STRENGTH
         }
         train_loader, val_loader = create_dataloaders(self.config, stage3_config)
-        param_groups = [
-            {'params': self.model.backbone.parameters(), 'lr': self.config.STAGE3_LR_BACKBONE},
-            {'params': self.model.cbam_stages.parameters(), 'lr': self.config.STAGE3_LR_HEAD},
-            {'params': self.model.pwca.parameters(), 'lr': self.config.STAGE3_LR_HEAD},
-            {'params': self.model.embedding_head.parameters(), 'lr': self.config.STAGE3_LR_HEAD},
-            {'params': self.model.arcface_head.parameters(), 'lr': self.config.STAGE3_LR_HEAD},
-        ]
-        base_optimizer = optim.AdamW
-        optimizer = SAM(param_groups, base_optimizer, rho=self.config.SAM_RHO)
-        scheduler = CosineAnnealingLR(optimizer.base_optimizer, T_max=self.config.SCHEDULER_T_MAX, eta_min=self.config.SCHEDULER_ETA_MIN)
+        self.optimizer = self._get_optimizer(stage3_config)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage3_config['epochs'])
 
-        for epoch in range(self.config.STAGE3_EPOCHS):
-            train_loss = self.train_one_epoch(train_loader, optimizer, use_sam=True)
-            val_loss = self.evaluate(val_loader)
-            print(f"Epoch {epoch+1}/{self.config.STAGE3_EPOCHS} -> Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.7f}")
-            scheduler.step()
+        for epoch in range(stage3_config['epochs']):
+            print(f"Epoch {epoch+1}/{stage3_config['epochs']}")
+            train_loss = self._train_one_epoch(train_loader)
+            val_loss = self._validate_one_epoch(val_loader)
+            self.scheduler.step()
+            print(f"Stage 3 -> Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
-        # Save the final model
-        final_model_path = os.path.join(self.config.OUTPUT_DIR, f"{self.config.MODEL_NAME}.pth")
-        os.makedirs(self.config.OUTPUT_DIR, exist_ok=True)
-        torch.save(self.model.state_dict(), final_model_path)
-        print(f"\nTraining complete. Model saved to {final_model_path}")
-
+        print("\n--- Training Finished ---")
