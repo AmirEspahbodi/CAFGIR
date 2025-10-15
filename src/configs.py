@@ -5,6 +5,7 @@ class TrainingConfig:
     DATA_DIR = "./dataset"
     NUM_CLASSES = 118 # As per your dataset description
     DEVICE = "cuda"
+    SEED=42
 
     # ===================================================================
     # Model Architecture Settings
