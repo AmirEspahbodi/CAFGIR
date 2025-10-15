@@ -12,7 +12,7 @@ class TrainingConfig:
     # ===================================================================
     # Model Architecture Settings
     # ===================================================================
-    BACKBONE = "convnextv2_base.fcmae_ft_in22k_in1_384"
+    BACKBONE = "convnextv2_base.fcmae_ft_in22k_in1k_384"
     EMBEDDING_DIM = 512
 
     # Sub-center ArcFace settings
