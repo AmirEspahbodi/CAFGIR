@@ -1,16 +1,18 @@
 class TrainingConfig:
+    """
+    A centralized configuration class for the entire training pipeline.
+    """
     # ===================================================================
     # Project specific settings
     # ===================================================================
-    DATA_DIR = "./dataset"
+    DATA_DIR = "/content/CAFGIR/augmented_car_dataset/"
     NUM_CLASSES = 118 # As per your dataset description
     DEVICE = "cuda"
-    SEED=42
 
     # ===================================================================
     # Model Architecture Settings
     # ===================================================================
-    BACKBONE = "convnextv2_base.fcmae_ft_in22k_in1k_384"
+    BACKBONE = "convnextv2_base.fcmae_ft_in22k_in1_384"
     EMBEDDING_DIM = 512
 
     # Sub-center ArcFace settings
@@ -28,7 +30,7 @@ class TrainingConfig:
     # Hybrid loss weight
     HYBRID_LOSS_ALPHA = 1.0
 
-    # NEW: Label Smoothing setting for the classification loss
+    # Label Smoothing setting for the classification loss
     LABEL_SMOOTHING = 0.1
 
     # ===================================================================
@@ -61,3 +63,5 @@ class TrainingConfig:
     MIXUP_CUTMIX_ALPHA_LOW = 0.2
     MIXUP_CUTMIX_ALPHA_HIGH = 1.0
 
+    SEED=42
+    OUTPUT_DIR='./output'
