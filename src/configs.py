@@ -113,6 +113,7 @@ class TrainingConfig:
     STAGE3_IMG_SIZE = 384
     STAGE3_BATCH_SIZE = 32 # May need to be reduced based on VRAM
     STAGE3_AUG_STRENGTH = 1.0 # Strong Mixup/CutMix alpha
+    PIN_MEMORY = True
     
     SEED=42
     OUTPUT_DIR='./output'
