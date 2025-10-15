@@ -92,8 +92,8 @@ def create_dataloaders(config, stage_config):
     val_dir = os.path.join(config.DATA_DIR, 'validation')
     
     # Use the special distractor dataset for training
-    train_dataset = SeatCoverDistractorDataset(root_dir=train_dir, transform=train_transform)
-    val_dataset = datasets.ImageFolder(root_dir=val_dir, transform=val_transform)
+    train_dataset = SeatCoverDistractorDataset(root=train_dir, transform=train_transform)
+    val_dataset = datasets.ImageFolder(root=val_dir, transform=val_transform)
 
     train_loader = DataLoader(
         train_dataset,
