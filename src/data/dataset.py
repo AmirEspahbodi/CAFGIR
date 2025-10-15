@@ -10,25 +10,25 @@ def get_augmentations(strength='mild', image_size=224):
     if strength == 'mild':
         return transforms.Compose([
             transforms.Resize((image_size, image_size)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1),
+            # transforms.RandomHorizontalFlip(),
+            # transforms.ColorJitter(brightness=0.1, contrast=0.1),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
     elif strength == 'moderate':
         return transforms.Compose([
             transforms.Resize((image_size, image_size)),
-            transforms.RandomHorizontalFlip(),
-            transforms.TrivialAugmentWide(),
+            # transforms.RandomHorizontalFlip(),
+            # transforms.TrivialAugmentWide(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
     elif strength == 'aggressive':
         return transforms.Compose([
             transforms.Resize((image_size, image_size)),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandAugment(),
-            transforms.RandomErasing(p=0.2),
+            # transforms.RandomHorizontalFlip(),
+            # transforms.RandAugment(),
+            # transforms.RandomErasing(p=0.2),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
