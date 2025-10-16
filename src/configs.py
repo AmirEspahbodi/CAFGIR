@@ -6,6 +6,7 @@ class TrainingConfig:
     # Project specific settings
     # ===================================================================
     DATA_DIR = "/kaggle/input/car-dataset/augmented_car_dataset"
+    # DATA_DIR = "/content/CAFGIR/augmented_car_dataset/"
     NUM_CLASSES = 118 # As per your dataset description
     DEVICE = "cuda"
 
@@ -104,6 +105,7 @@ class TrainingConfig:
     STAGE1_LR = 1e-3
     STAGE1_IMG_SIZE = 224
     STAGE1_BATCH_SIZE = 64  # Can be larger due to smaller image size
+    accumulation_steps_stage1 = 64
     STAGE1_AUG_STRENGTH = 0.0 # No Mixup/CutMix during warm-up
 
     # --- Stage 2: Early Full Fine-Tuning ---
