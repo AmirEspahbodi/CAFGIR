@@ -130,3 +130,4 @@ class TrainingConfig:
     
     SEED=42
     OUTPUT_DIR='./output'
+    CHECKPOINT_DIR = './checkpoints'
