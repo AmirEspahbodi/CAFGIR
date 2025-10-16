@@ -118,7 +118,7 @@ class TrainingConfig:
     STAGE3_BASE_LR = 1e-6 # Lower LR for final polishing
     STAGE3_HEAD_LR = 1e-5
     STAGE3_IMG_SIZE = 384
-    STAGE3_BATCH_SIZE = 16
+    STAGE3_BATCH_SIZE = 8
     STAGE3_ACCUMULATION_STEPS = 32
     STAGE3_AUG_STRENGTH = 1.0 # Strong Mixup/CutMix alpha
     
