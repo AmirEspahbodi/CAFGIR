@@ -103,7 +103,7 @@ class TrainingConfig:
     STAGE1_EPOCHS = 2
     STAGE1_LR = 1e-3
     STAGE1_IMG_SIZE = 224
-    STAGE1_BATCH_SIZE = 48  # Can be larger due to smaller image size
+    STAGE1_BATCH_SIZE = 64  # Can be larger due to smaller image size
     STAGE1_AUG_STRENGTH = 0.0 # No Mixup/CutMix during warm-up
 
     # --- Stage 2: Early Full Fine-Tuning ---
