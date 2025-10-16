@@ -118,8 +118,7 @@ class Trainer:
 
         avg_loss = train_loss / len(dataloader)
         metrics_output = self.train_metrics.compute()
-        scalar_metrics = {k: v.item() for k, v in metrics_output.items()}
-        return avg_loss, scalar_metrics
+        return avg_loss, metrics_output
 
     def _validate_one_epoch(self, dataloader):
         """Runs a single validation epoch."""
@@ -145,8 +144,7 @@ class Trainer:
 
         avg_loss = val_loss / len(dataloader)
         metrics_output = self.val_metrics.compute()
-        scalar_metrics = {k: v.item() for k, v in metrics_output.items()}
-        return avg_loss, scalar_metrics
+        return avg_loss, metrics_output
 
     def _print_metrics(self, stage_name, epoch, num_epochs, train_loss, train_metrics, val_loss, val_metrics):
         """Prints a formatted summary of the epoch's metrics."""
