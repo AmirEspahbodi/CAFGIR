@@ -72,12 +72,22 @@ class Trainer:
         Dynamically adjusts the learning rate for each parameter group at the
         start of a new training stage, preserving optimizer state.
         """
+        general_lr = stage_config.get('lr')
+
+        base_lr = stage_config.get('base_lr', general_lr)
+        head_lr = stage_config.get('head_lr', general_lr)
+
+        if base_lr is None or head_lr is None:
+            raise ValueError("Learning rate configuration is missing. "
+                             "Provide either a general 'lr' or specific 'base_lr' and 'head_lr'.")
+
         for i, param_group in enumerate(self.optimizer.param_groups):
              if i == 0: # Assuming the first group is the backbone
-                 param_group['lr'] = stage_config.get('base_lr', stage_config['lr'])
+                 param_group['lr'] = base_lr
              else:
-                 param_group['lr'] = stage_config.get('head_lr', stage_config['lr'])
-        print("Learning rates adjusted for the new stage.")
+                 param_group['lr'] = head_lr
+                 
+        print(f"Learning rates adjusted for the new stage: Backbone LR = {base_lr}, Head LR = {head_lr}")
 
     def _train_one_epoch(self, dataloader):
         """Runs a single training epoch."""
@@ -168,23 +178,23 @@ class Trainer:
         print("--- Starting Training Curriculum ---")
 
         # --- Stage 1: Head Warm-up ---
-        print("\n--- STAGE 1: Head Warm-up ---")
-        stage1_config = {
-            'epochs': self.config.STAGE1_EPOCHS,
-            'lr': self.config.STAGE1_LR,
-            'img_size': self.config.STAGE1_IMG_SIZE,
-            'batch_size': self.config.STAGE1_BATCH_SIZE,
-            'aug_strength': self.config.STAGE1_AUG_STRENGTH
-        }
-        train_loader, val_loader = create_dataloaders(self.config, stage1_config)
-        self.model.freeze_backbone()
+        # print("\n--- STAGE 1: Head Warm-up ---")
+        # stage1_config = {
+        #     'epochs': self.config.STAGE1_EPOCHS,
+        #     'lr': self.config.STAGE1_LR,
+        #     'img_size': self.config.STAGE1_IMG_SIZE,
+        #     'batch_size': self.config.STAGE1_BATCH_SIZE,
+        #     'aug_strength': self.config.STAGE1_AUG_STRENGTH
+        # }
+        # train_loader, val_loader = create_dataloaders(self.config, stage1_config)
+        # self.model.freeze_backbone()
         
-        self.optimizer = self._get_optimizer(stage1_config)
+        # self.optimizer = self._get_optimizer(stage1_config)
         
-        for epoch in range(stage1_config['epochs']):
-            train_loss, train_metrics = self._train_one_epoch(train_loader)
-            val_loss, val_metrics = self._validate_one_epoch(val_loader)
-            self._print_metrics("STAGE 1: Head Warm-up", epoch, stage1_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
+        # for epoch in range(stage1_config['epochs']):
+        #     train_loss, train_metrics = self._train_one_epoch(train_loader)
+        #     val_loss, val_metrics = self._validate_one_epoch(val_loader)
+        #     self._print_metrics("STAGE 1: Head Warm-up", epoch, stage1_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
 
         # --- Stage 2: Early Full Fine-Tuning ---
         print("\n--- STAGE 2: Early Full Fine-Tuning ---")
