@@ -7,9 +7,8 @@ from src.optimizer.sam import SAM
 from src.data.dataset import create_dataloaders
 from src.models.embedding_model import EmbeddingModel
 from src.losses.hybrid_loss import HybridLoss
-
-# Import torchmetrics for detailed performance tracking
 from torchmetrics.classification import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassF1Score
+from torchmetrics import MetricCollection
 
 class Trainer:
     """
@@ -36,9 +35,9 @@ class Trainer:
         self.train_metrics = self._create_metrics_collection().to(config.DEVICE)
         self.val_metrics = self._create_metrics_collection().to(config.DEVICE)
 
-    def _create_metrics_collection(self):
+    def _create_metrics_collection(self):   
         """Helper function to create a standardized collection of metrics."""
-        return torch.nn.ModuleDict({
+        return MetricCollection({
             'accuracy': MulticlassAccuracy(num_classes=self.config.NUM_CLASSES, average='macro'),
             'precision': MulticlassPrecision(num_classes=self.config.NUM_CLASSES, average='macro'),
             'recall': MulticlassRecall(num_classes=self.config.NUM_CLASSES, average='macro'),
