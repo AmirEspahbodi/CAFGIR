@@ -105,7 +105,7 @@ class TrainingConfig:
     STAGE1_AUG_STRENGTH = 0.0 # No Mixup/CutMix during warm-up
 
     # --- Stage 2: Early Full Fine-Tuning ---
-    STAGE2_EPOCHS = 1
+    STAGE2_EPOCHS = 5
     STAGE2_BASE_LR = 1e-5 # Differential LR for backbone
     STAGE2_HEAD_LR = 1e-4 # Differential LR for head
     STAGE2_IMG_SIZE = 320
@@ -114,7 +114,7 @@ class TrainingConfig:
     STAGE2_AUG_STRENGTH = 0.2 # Mild Mixup/CutMix alpha
 
     # --- Stage 3: Final High-Resolution Polishing ---
-    STAGE3_EPOCHS = 1
+    STAGE3_EPOCHS = 13
     STAGE3_BASE_LR = 1e-6 # Lower LR for final polishing
     STAGE3_HEAD_LR = 1e-5
     STAGE3_IMG_SIZE = 384
