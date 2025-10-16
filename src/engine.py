@@ -5,14 +5,17 @@ import os
 import torch.optim as optim
 from src.optimizer.sam import SAM
 from src.data.dataset import create_dataloaders
+from src.models.embedding_model import EmbeddingModel
+from src.losses.hybrid_loss import HybridLoss
 
 class Trainer:
-    def __init__(self, config):
+    def __init__(self, model, criterion, config):
         self.config = config
-        self.model = EmbeddingModel(config).to(config.DEVICE)
-        self.loss_fn = HybridLoss(config)
-        self.optimizer = None # Initialized in stages
-        self.scheduler = None # Initialized in stages
+        self.model = model.to(config.DEVICE)
+        self.loss_fn = criterion
+        # Optimizer and scheduler are now initialized once in the curriculum setup
+        self.optimizer = None
+        self.scheduler = None
 
     def _get_optimizer(self, stage_config):
         # Differential learning rates
@@ -23,14 +26,28 @@ class Trainer:
             {'params': self.model.embedding_head.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
             {'params': self.model.arcface_head.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
         ]
-        
+
         base_optimizer = optim.AdamW(param_groups, weight_decay=self.config.WEIGHT_DECAY)
-        
+
         # Use SAM for stages 2 and 3
         if 'base_lr' in stage_config:
+            print("Using SAM optimizer.")
             return SAM(self.model.parameters(), base_optimizer, rho=self.config.SAM_RHO)
         else:
+            print("Using AdamW optimizer.")
             return base_optimizer
+            
+    def _adjust_learning_rate(self, stage_config):
+        """Dynamically adjusts the learning rate for each parameter group."""
+        for param_group in self.optimizer.param_groups:
+            # Determine the correct LR based on which parameters the group contains
+            # This is a simple heuristic; a more robust way would be to tag the groups
+            if any("backbone" in name for name, _ in param_group['params']):
+                 param_group['lr'] = stage_config.get('base_lr', stage_config['lr'])
+            else:
+                 param_group['lr'] = stage_config.get('head_lr', stage_config['lr'])
+        print("Learning rates adjusted for the new stage.")
+
 
     def _train_one_epoch(self, dataloader):
         self.model.train()
@@ -43,13 +60,13 @@ class Trainer:
             if isinstance(self.optimizer, SAM):
                 # First forward-backward pass for SAM
                 outputs = self.model(images, labels, distractor_images)
-                loss = self.loss_fn(outputs['embedding'], outputs['logits'], labels)
+                loss = self.loss_fn(outputs, labels)
                 loss.backward()
                 self.optimizer.first_step(zero_grad=True)
 
                 # Second forward-backward pass for SAM
                 outputs_2 = self.model(images, labels, distractor_images)
-                loss_2 = self.loss_fn(outputs_2['embedding'], outputs_2['logits'], labels)
+                loss_2 = self.loss_fn(outputs_2, labels)
                 loss_2.backward()
                 self.optimizer.second_step(zero_grad=True)
                 
@@ -57,7 +74,7 @@ class Trainer:
             else:
                 self.optimizer.zero_grad()
                 outputs = self.model(images, labels, distractor_images)
-                loss = self.loss_fn(outputs['embedding'], outputs['logits'], labels)
+                loss = self.loss_fn(outputs, labels)
                 loss.backward()
                 self.optimizer.step()
                 loss_val = loss.item()
@@ -75,24 +92,23 @@ class Trainer:
         progress_bar = tqdm(dataloader, desc="Validation", leave=False)
 
         with torch.no_grad():
-            for images, labels, _ in progress_bar:
+            # BUG FIX: Unpack only two items (image, label) from the validation loader
+            for images, labels in progress_bar:
                 images, labels = images.to(self.config.DEVICE), labels.to(self.config.DEVICE)
                 outputs = self.model(images, labels)
-                loss = self.loss_fn(outputs['embedding'], outputs['logits'], labels)
+                loss = self.loss_fn(outputs, labels)
                 val_loss += loss.item()
 
-                # =================== FIX IS HERE ===================
-                # Move tensors to CPU before appending to the list.
-                # This frees up GPU VRAM and prevents the memory leak.
                 all_embeddings.append(outputs['embedding'].cpu())
                 all_labels.append(labels.cpu())
-                # ===================================================
 
-        # Here you would typically calculate metrics like mAP, Recall@K, etc.
-        # For now, we just return the loss.
-        # all_embeddings = torch.cat(all_embeddings)
-        # all_labels = torch.cat(all_labels)
-
+        all_embeddings = torch.cat(all_embeddings)
+        all_labels = torch.cat(all_labels)
+        
+        # TODO: Implement retrieval metrics like mAP and Recall@K here
+        # For now, we just return the validation loss.
+        # Example: metrics = calculate_retrieval_metrics(all_embeddings, all_labels)
+        
         return val_loss / len(dataloader)
 
 
@@ -110,7 +126,8 @@ class Trainer:
         }
         train_loader, val_loader = create_dataloaders(self.config, stage1_config)
         self.model.freeze_backbone()
-        print("Freezing backbone.")
+        
+        # Initialize optimizer once
         self.optimizer = self._get_optimizer(stage1_config)
         
         for epoch in range(stage1_config['epochs']):
@@ -131,8 +148,9 @@ class Trainer:
         }
         train_loader, val_loader = create_dataloaders(self.config, stage2_config)
         self.model.unfreeze_backbone()
-        print("Unfreezing backbone.")
-        self.optimizer = self._get_optimizer(stage2_config)
+        
+        # Adjust learning rates without re-initializing the optimizer
+        self._adjust_learning_rate(stage2_config)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage2_config['epochs'])
 
         for epoch in range(stage2_config['epochs']):
@@ -153,7 +171,9 @@ class Trainer:
             'aug_strength': self.config.STAGE3_AUG_STRENGTH
         }
         train_loader, val_loader = create_dataloaders(self.config, stage3_config)
-        self.optimizer = self._get_optimizer(stage3_config)
+        
+        # Adjust learning rates for the final stage
+        self._adjust_learning_rate(stage3_config)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage3_config['epochs'])
 
         for epoch in range(stage3_config['epochs']):
