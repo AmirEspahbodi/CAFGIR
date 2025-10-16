@@ -188,7 +188,7 @@ class Trainer:
               f"F1: {val_metrics['f1_score']:.4f}")
         print("-" * (len(stage_name) + 20))
 
-def run_training_curriculum(self):
+    def run_training_curriculum(self):
         """Executes the full multi-stage training curriculum."""
         print("--- Starting Training Curriculum ---")
 
