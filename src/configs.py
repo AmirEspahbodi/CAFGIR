@@ -12,8 +12,8 @@ class TrainingConfig:
     # ===================================================================
     # Model Architecture Settings
     # ===================================================================
-    BACKBONE = "facebook/convnextv2-base-22k-384"
-    # facebook/convnextv2-tiny-22k-384
+    BACKBONE = "facebook/convnextv2-tiny-22k-384"
+    # facebook/convnextv2-base-22k-384
     
     EMBEDDING_DIM = 512
 
