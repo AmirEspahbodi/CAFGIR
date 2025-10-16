@@ -129,9 +129,14 @@ class Trainer:
         progress_bar = tqdm(dataloader, desc="Validation", leave=False)
 
         with torch.no_grad():
-            for images, labels in progress_bar:
-                images, labels = images.to(self.config.DEVICE), labels.to(self.config.DEVICE)
-                outputs = self.model(images, labels)
+            for images, labels, distractor_images in progress_bar:
+                images, labels, distractor_images = (
+                    images.to(self.config.DEVICE),
+                    labels.to(self.config.DEVICE),
+                    distractor_images.to(self.config.DEVICE)
+                )
+
+                outputs = self.model(images, labels, distractor_images)
                 loss = self.loss_fn(outputs, labels)
                 val_loss += loss.item()
 

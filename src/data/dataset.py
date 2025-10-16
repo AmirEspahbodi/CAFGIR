@@ -80,20 +80,19 @@ class SeatCoverDistractorDataset(Dataset):
 def create_dataloaders(config, stage_config):
     """Creates training and validation dataloaders for a given stage."""
     train_transform = get_augmentations(
-        strength=stage_config['aug_strength'], 
+        strength=stage_config['aug_strength'],
         image_size=stage_config['img_size']
     )
     val_transform = get_augmentations(
-        strength='none', 
+        strength='none',
         image_size=stage_config['img_size']
     )
 
     train_dir = os.path.join(config.DATA_DIR, 'train')
     val_dir = os.path.join(config.DATA_DIR, 'validation')
-    
-    # Use the special distractor dataset for training
+
     train_dataset = SeatCoverDistractorDataset(root_dir=train_dir, transform=train_transform)
-    val_dataset = datasets.ImageFolder(root=val_dir, transform=val_transform)
+    val_dataset = SeatCoverDistractorDataset(root_dir=val_dir, transform=val_transform)
 
     train_loader = DataLoader(
         train_dataset,
@@ -110,5 +109,5 @@ def create_dataloaders(config, stage_config):
         num_workers=config.NUM_WORKERS,
         pin_memory=config.PIN_MEMORY
     )
-    
+
     return train_loader, val_loader
