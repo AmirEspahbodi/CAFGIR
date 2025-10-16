@@ -193,6 +193,7 @@ class Trainer:
         print("--- Starting Training Curriculum ---")
 
         # --- Stage 1: Head Warm-up (Logic included but kept commented to match your file) ---
+        accumulation_steps_stage1 = self.config.STAGE1_ACCUMULATION_STEPS
         print("\n--- STAGE 1: Head Warm-up ---")
         stage1_config = {
             'epochs': self.config.STAGE1_EPOCHS,
@@ -202,7 +203,6 @@ class Trainer:
             'aug_strength': self.config.STAGE1_AUG_STRENGTH
         }
         # Accumulation is likely not needed here, so we'd default to 1.
-        # accumulation_steps_stage1 = getattr(self.config, 'STAGE1_ACCUMULATION_STEPS', 1) 
         train_loader, val_loader = create_dataloaders(self.config, stage1_config)
         self.model.freeze_backbone()
         
