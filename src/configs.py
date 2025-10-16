@@ -12,7 +12,9 @@ class TrainingConfig:
     # ===================================================================
     # Model Architecture Settings
     # ===================================================================
-    BACKBONE = "convnextv2_base.fcmae_ft_in22k_in1k_384"
+    BACKBONE = "facebook/convnextv2-base-22k-384"
+    # facebook/convnextv2-tiny-22k-384
+    
     EMBEDDING_DIM = 512
 
     # Sub-center ArcFace settings
