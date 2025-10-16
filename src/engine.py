@@ -89,37 +89,52 @@ class Trainer:
                  
         print(f"Learning rates adjusted for the new stage: Backbone LR = {base_lr}, Head LR = {head_lr}")
 
-    def _train_one_epoch(self, dataloader):
+    def _train_one_epoch(self, dataloader, accumulation_steps=1): # Add accumulation_steps as an argument
         """Runs a single training epoch."""
         self.model.train()
         self.train_metrics.reset()
         train_loss = 0.0
+        #  Initialize the optimizer gradients
+        self.optimizer.zero_grad() 
+        
         progress_bar = tqdm(dataloader, desc="Training", leave=False)
 
-        for images, labels, distractor_images in progress_bar:
+        for i, (images, labels, distractor_images) in enumerate(progress_bar):
             images, labels, distractor_images = images.to(self.config.DEVICE), labels.to(self.config.DEVICE), distractor_images.to(self.config.DEVICE)
 
             def forward_pass():
                 return self.model(images, labels, distractor_images)
 
+            # --- Loss Calculation ---
+            # The forward and loss calculation logic remains the same
             if isinstance(self.optimizer, SAM):
+                # SAM requires two forward/backward passes
                 outputs = forward_pass()
                 loss = self.loss_fn(outputs, labels)
+                loss = loss / accumulation_steps # Normalize loss
                 loss.backward()
                 self.optimizer.first_step(zero_grad=True)
 
                 outputs_2 = forward_pass()
                 loss_2 = self.loss_fn(outputs_2, labels)
+                loss_2 = loss_2 / accumulation_steps # Normalize loss
                 loss_2.backward()
-                self.optimizer.second_step(zero_grad=True)
-                final_outputs, loss_val = outputs_2, loss_2.item()
+                final_outputs, loss_val = outputs_2, loss_2.item() * accumulation_steps # Scale loss back for logging
             else:
-                self.optimizer.zero_grad()
                 outputs = forward_pass()
                 loss = self.loss_fn(outputs, labels)
+                loss = loss / accumulation_steps # Normalize loss
                 loss.backward()
-                self.optimizer.step()
-                final_outputs, loss_val = outputs, loss.item()
+                final_outputs, loss_val = outputs, loss.item() * accumulation_steps
+
+            # --- Gradient Accumulation Step ---
+            if (i + 1) % accumulation_steps == 0:
+                if isinstance(self.optimizer, SAM):
+                    self.optimizer.second_step(zero_grad=True)
+                else:
+                    self.optimizer.step()
+                
+                self.optimizer.zero_grad()
 
             preds = final_outputs['logits'].detach()
             self.train_metrics.update(preds, labels)
@@ -173,28 +188,38 @@ class Trainer:
               f"F1: {val_metrics['f1_score']:.4f}")
         print("-" * (len(stage_name) + 20))
 
-    def run_training_curriculum(self):
+def run_training_curriculum(self):
         """Executes the full multi-stage training curriculum."""
         print("--- Starting Training Curriculum ---")
 
-        # --- Stage 1: Head Warm-up ---
+        # --- Stage 1: Head Warm-up (Logic included but kept commented to match your file) ---
         # print("\n--- STAGE 1: Head Warm-up ---")
-        stage1_config = {
-            'epochs': self.config.STAGE1_EPOCHS,
-            'lr': self.config.STAGE1_LR,
-            'img_size': self.config.STAGE1_IMG_SIZE,
-            'batch_size': self.config.STAGE1_BATCH_SIZE,
-            'aug_strength': self.config.STAGE1_AUG_STRENGTH
-        }
+        # stage1_config = {
+        #     'epochs': self.config.STAGE1_EPOCHS,
+        #     'lr': self.config.STAGE1_LR,
+        #     'img_size': self.config.STAGE1_IMG_SIZE,
+        #     'batch_size': self.config.STAGE1_BATCH_SIZE,
+        #     'aug_strength': self.config.STAGE1_AUG_STRENGTH
+        # }
+        # # Accumulation is likely not needed here, so we'd default to 1.
+        # # accumulation_steps_stage1 = getattr(self.config, 'STAGE1_ACCUMULATION_STEPS', 1) 
         # train_loader, val_loader = create_dataloaders(self.config, stage1_config)
         # self.model.freeze_backbone()
         
-        self.optimizer = self._get_optimizer(stage1_config)
+        # self.optimizer = self._get_optimizer(stage1_config)
         
         # for epoch in range(stage1_config['epochs']):
-        #     train_loss, train_metrics = self._train_one_epoch(train_loader)
+        #     train_loss, train_metrics = self._train_one_epoch(train_loader, accumulation_steps_stage1)
         #     val_loss, val_metrics = self._validate_one_epoch(val_loader)
         #     self._print_metrics("STAGE 1: Head Warm-up", epoch, stage1_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
+        # --- End of Stage 1 ---
+        
+        # The optimizer needs to be initialized before stage 2 if stage 1 is skipped
+        if not self.optimizer:
+            # We use stage 2 config to initialize it, but stage 1 config would also work if it were active
+            temp_config = {'lr': self.config.STAGE2_HEAD_LR}
+            self.optimizer = self._get_optimizer(temp_config)
+
 
         # --- Stage 2: Early Full Fine-Tuning ---
         print("\n--- STAGE 2: Early Full Fine-Tuning ---")
@@ -206,6 +231,10 @@ class Trainer:
             'batch_size': self.config.STAGE2_BATCH_SIZE,
             'aug_strength': self.config.STAGE2_AUG_STRENGTH
         }
+        # Get the number of accumulation steps for this stage
+        accumulation_steps_stage2 = self.config.STAGE2_ACCUMULATION_STEPS
+        print(f"Effective batch size for Stage 2 will be: {stage2_config['batch_size']} * {accumulation_steps_stage2} = {stage2_config['batch_size'] * accumulation_steps_stage2}")
+        
         train_loader, val_loader = create_dataloaders(self.config, stage2_config)
         self.model.unfreeze_backbone()
         
@@ -213,7 +242,8 @@ class Trainer:
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage2_config['epochs'])
 
         for epoch in range(stage2_config['epochs']):
-            train_loss, train_metrics = self._train_one_epoch(train_loader)
+            # Pass the accumulation steps to the training function
+            train_loss, train_metrics = self._train_one_epoch(train_loader, accumulation_steps=accumulation_steps_stage2)
             val_loss, val_metrics = self._validate_one_epoch(val_loader)
             self.scheduler.step()
             self._print_metrics("STAGE 2: Early Fine-Tuning", epoch, stage2_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
@@ -228,13 +258,18 @@ class Trainer:
             'batch_size': self.config.STAGE3_BATCH_SIZE,
             'aug_strength': self.config.STAGE3_AUG_STRENGTH
         }
+        # Get the number of accumulation steps for this stage
+        accumulation_steps_stage3 = self.config.STAGE3_ACCUMULATION_STEPS
+        print(f"Effective batch size for Stage 3 will be: {stage3_config['batch_size']} * {accumulation_steps_stage3} = {stage3_config['batch_size'] * accumulation_steps_stage3}")
+        
         train_loader, val_loader = create_dataloaders(self.config, stage3_config)
         
         self._adjust_learning_rate(stage3_config)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage3_config['epochs'])
 
         for epoch in range(stage3_config['epochs']):
-            train_loss, train_metrics = self._train_one_epoch(train_loader)
+            # Pass the accumulation steps to the training function
+            train_loss, train_metrics = self._train_one_epoch(train_loader, accumulation_steps=accumulation_steps_stage3)
             val_loss, val_metrics = self._validate_one_epoch(val_loader)
             self.scheduler.step()
             self._print_metrics("STAGE 3: Final Polishing", epoch, stage3_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
