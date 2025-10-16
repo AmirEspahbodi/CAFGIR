@@ -179,17 +179,17 @@ class Trainer:
 
         # --- Stage 1: Head Warm-up ---
         # print("\n--- STAGE 1: Head Warm-up ---")
-        # stage1_config = {
-        #     'epochs': self.config.STAGE1_EPOCHS,
-        #     'lr': self.config.STAGE1_LR,
-        #     'img_size': self.config.STAGE1_IMG_SIZE,
-        #     'batch_size': self.config.STAGE1_BATCH_SIZE,
-        #     'aug_strength': self.config.STAGE1_AUG_STRENGTH
-        # }
+        stage1_config = {
+            'epochs': self.config.STAGE1_EPOCHS,
+            'lr': self.config.STAGE1_LR,
+            'img_size': self.config.STAGE1_IMG_SIZE,
+            'batch_size': self.config.STAGE1_BATCH_SIZE,
+            'aug_strength': self.config.STAGE1_AUG_STRENGTH
+        }
         # train_loader, val_loader = create_dataloaders(self.config, stage1_config)
         # self.model.freeze_backbone()
         
-        # self.optimizer = self._get_optimizer(stage1_config)
+        self.optimizer = self._get_optimizer(stage1_config)
         
         # for epoch in range(stage1_config['epochs']):
         #     train_loss, train_metrics = self._train_one_epoch(train_loader)
