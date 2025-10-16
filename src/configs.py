@@ -108,6 +108,7 @@ class TrainingConfig:
     STAGE1_LR = 1e-3
     STAGE1_IMG_SIZE = 224
     STAGE1_BATCH_SIZE = 64  # Can be larger due to smaller image size
+    STAGE1_ACCUMULATION_STEPS = 1
     STAGE1_AUG_STRENGTH = 0.0 # No Mixup/CutMix during warm-up
 
     # --- Stage 2: Early Full Fine-Tuning ---
@@ -116,6 +117,7 @@ class TrainingConfig:
     STAGE2_HEAD_LR = 1e-4 # Differential LR for head
     STAGE2_IMG_SIZE = 320
     STAGE2_BATCH_SIZE = 16
+    STAGE2_ACCUMULATION_STEPS = 2
     STAGE2_AUG_STRENGTH = 0.2 # Mild Mixup/CutMix alpha
 
     # --- Stage 3: Final High-Resolution Polishing ---
@@ -124,6 +126,7 @@ class TrainingConfig:
     STAGE3_HEAD_LR = 1e-5
     STAGE3_IMG_SIZE = 384
     STAGE3_BATCH_SIZE = 8
+    STAGE3_ACCUMULATION_STEPS = 4
     STAGE3_AUG_STRENGTH = 1.0 # Strong Mixup/CutMix alpha
     
     PIN_MEMORY = True
