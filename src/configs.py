@@ -109,7 +109,7 @@ class TrainingConfig:
     STAGE2_BASE_LR = 1e-5 # Differential LR for backbone
     STAGE2_HEAD_LR = 1e-4 # Differential LR for head
     STAGE2_IMG_SIZE = 320
-    STAGE2_BATCH_SIZE = 16
+    STAGE2_BATCH_SIZE = 8
     STAGE2_AUG_STRENGTH = 0.2 # Mild Mixup/CutMix alpha
 
     # --- Stage 3: Final High-Resolution Polishing ---
@@ -117,7 +117,7 @@ class TrainingConfig:
     STAGE3_BASE_LR = 1e-6 # Lower LR for final polishing
     STAGE3_HEAD_LR = 1e-5
     STAGE3_IMG_SIZE = 384
-    STAGE3_BATCH_SIZE = 16 # May need to be reduced based on VRAM
+    STAGE3_BATCH_SIZE = 8 # May need to be reduced based on VRAM
     STAGE3_AUG_STRENGTH = 1.0 # Strong Mixup/CutMix alpha
     
     PIN_MEMORY = True
