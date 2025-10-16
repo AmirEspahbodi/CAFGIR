@@ -217,31 +217,31 @@ class Trainer:
 
 
         # --- Stage 2: Early Full Fine-Tuning ---
-        # print("\n--- STAGE 2: Early Full Fine-Tuning ---")
-        # stage2_config = {
-        #     'epochs': self.config.STAGE2_EPOCHS,
-        #     'base_lr': self.config.STAGE2_BASE_LR,
-        #     'head_lr': self.config.STAGE2_HEAD_LR,
-        #     'img_size': self.config.STAGE2_IMG_SIZE,
-        #     'batch_size': self.config.STAGE2_BATCH_SIZE,
-        #     'aug_strength': self.config.STAGE2_AUG_STRENGTH
-        # }
-        # # Get the number of accumulation steps for this stage
-        # accumulation_steps_stage2 = self.config.STAGE2_ACCUMULATION_STEPS
-        # print(f"Effective batch size for Stage 2 will be: {stage2_config['batch_size']} * {accumulation_steps_stage2} = {stage2_config['batch_size'] * accumulation_steps_stage2}")
+        print("\n--- STAGE 2: Early Full Fine-Tuning ---")
+        stage2_config = {
+            'epochs': self.config.STAGE2_EPOCHS,
+            'base_lr': self.config.STAGE2_BASE_LR,
+            'head_lr': self.config.STAGE2_HEAD_LR,
+            'img_size': self.config.STAGE2_IMG_SIZE,
+            'batch_size': self.config.STAGE2_BATCH_SIZE,
+            'aug_strength': self.config.STAGE2_AUG_STRENGTH
+        }
+        # Get the number of accumulation steps for this stage
+        accumulation_steps_stage2 = self.config.STAGE2_ACCUMULATION_STEPS
+        print(f"Effective batch size for Stage 2 will be: {stage2_config['batch_size']} * {accumulation_steps_stage2} = {stage2_config['batch_size'] * accumulation_steps_stage2}")
         
-        # train_loader, val_loader = create_dataloaders(self.config, stage2_config)
-        # self.model.unfreeze_backbone()
+        train_loader, val_loader = create_dataloaders(self.config, stage2_config)
+        self.model.unfreeze_backbone()
         
-        # self._adjust_learning_rate(stage2_config)
-        # self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage2_config['epochs'])
+        self._adjust_learning_rate(stage2_config)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage2_config['epochs'])
 
-        # for epoch in range(stage2_config['epochs']):
-        #     # Pass the accumulation steps to the training function
-        #     train_loss, train_metrics = self._train_one_epoch(train_loader, accumulation_steps=accumulation_steps_stage2)
-        #     val_loss, val_metrics = self._validate_one_epoch(val_loader)
-        #     self.scheduler.step()
-        #     self._print_metrics("STAGE 2: Early Fine-Tuning", epoch, stage2_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
+        for epoch in range(stage2_config['epochs']):
+            # Pass the accumulation steps to the training function
+            train_loss, train_metrics = self._train_one_epoch(train_loader, accumulation_steps=accumulation_steps_stage2)
+            val_loss, val_metrics = self._validate_one_epoch(val_loader)
+            self.scheduler.step()
+            self._print_metrics("STAGE 2: Early Fine-Tuning", epoch, stage2_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
 
         # --- Stage 3: Final High-Resolution Polishing ---
         print("\n--- STAGE 3: Final High-Resolution Polishing ---")
