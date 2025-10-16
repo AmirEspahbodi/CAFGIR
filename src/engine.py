@@ -178,7 +178,7 @@ class Trainer:
         print("--- Starting Training Curriculum ---")
 
         # --- Stage 1: Head Warm-up ---
-        # print("\n--- STAGE 1: Head Warm-up ---")
+        print("\n--- STAGE 1: Head Warm-up ---")
         stage1_config = {
             'epochs': self.config.STAGE1_EPOCHS,
             'lr': self.config.STAGE1_LR,
@@ -186,15 +186,15 @@ class Trainer:
             'batch_size': self.config.STAGE1_BATCH_SIZE,
             'aug_strength': self.config.STAGE1_AUG_STRENGTH
         }
-        # train_loader, val_loader = create_dataloaders(self.config, stage1_config)
-        # self.model.freeze_backbone()
+        train_loader, val_loader = create_dataloaders(self.config, stage1_config)
+        self.model.freeze_backbone()
         
         self.optimizer = self._get_optimizer(stage1_config)
         
-        # for epoch in range(stage1_config['epochs']):
-        #     train_loss, train_metrics = self._train_one_epoch(train_loader)
-        #     val_loss, val_metrics = self._validate_one_epoch(val_loader)
-        #     self._print_metrics("STAGE 1: Head Warm-up", epoch, stage1_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
+        for epoch in range(stage1_config['epochs']):
+            train_loss, train_metrics = self._train_one_epoch(train_loader)
+            val_loss, val_metrics = self._validate_one_epoch(val_loader)
+            self._print_metrics("STAGE 1: Head Warm-up", epoch, stage1_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
 
         # --- Stage 2: Early Full Fine-Tuning ---
         print("\n--- STAGE 2: Early Full Fine-Tuning ---")
