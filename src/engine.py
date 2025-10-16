@@ -13,7 +13,7 @@ from torchmetrics import MetricCollection
 class Trainer:
     """
     Handles the model training curriculum, including multi-stage training,
-    optimization, validation, and metric reporting.
+    optimization, validation, metric reporting, and checkpointing.
     """
     def __init__(self, model, criterion, config):
         """
@@ -31,9 +31,43 @@ class Trainer:
         self.scheduler = None
 
         # --- METRICS INITIALIZATION ---
-        # Initialize metrics for both training and validation phases
         self.train_metrics = self._create_metrics_collection().to(config.DEVICE)
         self.val_metrics = self._create_metrics_collection().to(config.DEVICE)
+        
+        # --- CHECKPOINTING INITIALIZATION (NEW) ---
+        # Track the best validation accuracy seen so far.
+        self.best_val_accuracy = 0.0
+        # Define the directory to save checkpoints, default to 'checkpoints'.
+        self.checkpoint_dir = getattr(config, 'CHECKPOINT_DIR', 'checkpoints')
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        print(f"✅ Checkpoints will be saved to '{self.checkpoint_dir}'")
+
+    # --- NEW METHOD TO SAVE THE BEST MODEL ---
+    def _save_checkpoint(self, stage_name, epoch, val_metrics):
+        """
+        Saves the model checkpoint if the current validation accuracy is the best so far.
+        """
+        current_accuracy = val_metrics['accuracy']
+        if current_accuracy > self.best_val_accuracy:
+            self.best_val_accuracy = current_accuracy
+            
+            # Sanitize stage_name to create a valid filename
+            safe_stage_name = stage_name.replace(" ", "_").replace(":", "")
+
+            checkpoint_filename = f"best_model_{safe_stage_name}_epoch{epoch+1}_acc{current_accuracy:.4f}.pth"
+            checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
+            
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'best_val_accuracy': self.best_val_accuracy,
+                'stage_name': stage_name
+            }
+            
+            # Save the checkpoint dictionary
+            torch.save(checkpoint, checkpoint_path)
+            print(f"\n✨ New best model found! Accuracy improved to {current_accuracy:.4f}. Checkpoint saved to {checkpoint_path}")
 
     def _create_metrics_collection(self):   
         """Helper function to create a standardized collection of metrics."""
@@ -59,7 +93,6 @@ class Trainer:
 
         base_optimizer = optim.AdamW(param_groups, weight_decay=self.config.WEIGHT_DECAY)
 
-        # Use Sharpness-Aware Minimization (SAM) for more robust training in later stages
         if 'base_lr' in stage_config:
             print("Using SAM optimizer.")
             return SAM(self.model.parameters(), base_optimizer, rho=self.config.SAM_RHO)
@@ -82,7 +115,7 @@ class Trainer:
                              "Provide either a general 'lr' or specific 'base_lr' and 'head_lr'.")
 
         for i, param_group in enumerate(self.optimizer.param_groups):
-             if i == 0: # Assuming the first group is the backbone
+             if i == 0:
                  param_group['lr'] = base_lr
              else:
                  param_group['lr'] = head_lr
@@ -180,35 +213,30 @@ class Trainer:
         # --- Stage 1: Head Warm-up ---
         print("\n--- STAGE 1: Head Warm-up ---")
         stage1_config = {
-            'epochs': self.config.STAGE1_EPOCHS,
-            'lr': self.config.STAGE1_LR,
-            'img_size': self.config.STAGE1_IMG_SIZE,
-            'batch_size': self.config.STAGE1_BATCH_SIZE,
+            'epochs': self.config.STAGE1_EPOCHS, 'lr': self.config.STAGE1_LR,
+            'img_size': self.config.STAGE1_IMG_SIZE, 'batch_size': self.config.STAGE1_BATCH_SIZE,
             'aug_strength': self.config.STAGE1_AUG_STRENGTH
         }
         train_loader, val_loader = create_dataloaders(self.config, stage1_config)
         self.model.freeze_backbone()
-        
         self.optimizer = self._get_optimizer(stage1_config)
         
         for epoch in range(stage1_config['epochs']):
             train_loss, train_metrics = self._train_one_epoch(train_loader)
             val_loss, val_metrics = self._validate_one_epoch(val_loader)
             self._print_metrics("STAGE 1: Head Warm-up", epoch, stage1_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
+            # --- SAVE BEST MODEL (MODIFIED) ---
+            self._save_checkpoint("STAGE 1", epoch, val_metrics)
 
         # --- Stage 2: Early Full Fine-Tuning ---
         print("\n--- STAGE 2: Early Full Fine-Tuning ---")
         stage2_config = {
-            'epochs': self.config.STAGE2_EPOCHS,
-            'base_lr': self.config.STAGE2_BASE_LR,
-            'head_lr': self.config.STAGE2_HEAD_LR,
-            'img_size': self.config.STAGE2_IMG_SIZE,
-            'batch_size': self.config.STAGE2_BATCH_SIZE,
-            'aug_strength': self.config.STAGE2_AUG_STRENGTH
+            'epochs': self.config.STAGE2_EPOCHS, 'base_lr': self.config.STAGE2_BASE_LR,
+            'head_lr': self.config.STAGE2_HEAD_LR, 'img_size': self.config.STAGE2_IMG_SIZE,
+            'batch_size': self.config.STAGE2_BATCH_SIZE, 'aug_strength': self.config.STAGE2_AUG_STRENGTH
         }
         train_loader, val_loader = create_dataloaders(self.config, stage2_config)
         self.model.unfreeze_backbone()
-        
         self._adjust_learning_rate(stage2_config)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage2_config['epochs'])
 
@@ -217,19 +245,17 @@ class Trainer:
             val_loss, val_metrics = self._validate_one_epoch(val_loader)
             self.scheduler.step()
             self._print_metrics("STAGE 2: Early Fine-Tuning", epoch, stage2_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
+            # --- SAVE BEST MODEL (MODIFIED) ---
+            self._save_checkpoint("STAGE 2", epoch, val_metrics)
 
         # --- Stage 3: Final High-Resolution Polishing ---
         print("\n--- STAGE 3: Final High-Resolution Polishing ---")
         stage3_config = {
-            'epochs': self.config.STAGE3_EPOCHS,
-            'base_lr': self.config.STAGE3_BASE_LR,
-            'head_lr': self.config.STAGE3_HEAD_LR,
-            'img_size': self.config.STAGE3_IMG_SIZE,
-            'batch_size': self.config.STAGE3_BATCH_SIZE,
-            'aug_strength': self.config.STAGE3_AUG_STRENGTH
+            'epochs': self.config.STAGE3_EPOCHS, 'base_lr': self.config.STAGE3_BASE_LR,
+            'head_lr': self.config.STAGE3_HEAD_LR, 'img_size': self.config.STAGE3_IMG_SIZE,
+            'batch_size': self.config.STAGE3_BATCH_SIZE, 'aug_strength': self.config.STAGE3_AUG_STRENGTH
         }
         train_loader, val_loader = create_dataloaders(self.config, stage3_config)
-        
         self._adjust_learning_rate(stage3_config)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage3_config['epochs'])
 
@@ -238,5 +264,7 @@ class Trainer:
             val_loss, val_metrics = self._validate_one_epoch(val_loader)
             self.scheduler.step()
             self._print_metrics("STAGE 3: Final Polishing", epoch, stage3_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
+            # --- SAVE BEST MODEL (MODIFIED) ---
+            self._save_checkpoint("STAGE 3", epoch, val_metrics)
 
         print("\n--- Training Finished ---")
