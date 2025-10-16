@@ -49,16 +49,78 @@ class SubCenterArcFaceHead(nn.Module):
         return output_logits
 
 
+# class EmbeddingModel(nn.Module):
+#     def __init__(self, config):
+#         super().__init__()
+#         self.config = config
+
+#         self.backbone = ConvNextV2Model.from_pretrained(config.FBACKBONE)
+#         self.feature_dims = self.backbone.config.hidden_sizes
+#         self._insert_cbam_modules()
+
+#         feature_dim = self.feature_dims[-1]
+#         self.pwca = PairwiseCrossAttention(in_dim=feature_dim)
+#         self.global_pool = nn.AdaptiveAvgPool2d(1)
+
+#         self.embedding_head = nn.Sequential(
+#             nn.Linear(feature_dim, feature_dim // 2),
+#             nn.BatchNorm1d(feature_dim // 2),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(feature_dim // 2, config.EMBEDDING_DIM)
+#         )
+        
+#         self.arcface_head = SubCenterArcFaceHead(config)
+
+#     def _insert_cbam_modules(self):
+#         self.cbam_stages = nn.ModuleList()
+#         for dim in self.feature_dims:
+#             self.cbam_stages.append(CBAM(dim))
+
+#     def _get_features(self, x):
+#         outputs = self.backbone(pixel_values=x, output_hidden_states=True)
+        
+#         features = outputs.hidden_states[1:]
+        
+#         refined_features = [self.cbam_stages[i](f) for i, f in enumerate(features)]
+#         return refined_features[-1]
+
+#     def forward(self, x, labels=None, x_distractor=None):
+#         final_features = self._get_features(x)
+
+#         if self.training and x_distractor is not None:
+#             distractor_features = self._get_features(x_distractor)
+#             final_features = self.pwca(final_features, distractor_features)
+
+#         pooled_features = self.global_pool(final_features).flatten(1)
+#         embedding = self.embedding_head(pooled_features)
+        
+#         logits = None
+#         if labels is not None:
+#             logits = self.arcface_head(embedding, labels)
+        
+#         return {"embedding": embedding, "logits": logits}
+
+#     def freeze_backbone(self):
+#         print("Freezing backbone.")
+#         for param in self.backbone.parameters():
+#             param.requires_grad = False
+
+#     def unfreeze_backbone(self):
+#         print("Unfreezing backbone.")
+#         for param in self.backbone.parameters():
+#             param.requires_grad = True
+
+
+import timm
 class EmbeddingModel(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
 
-        self.backbone = ConvNextV2Model.from_pretrained(config.BACKBONE)
-        self.feature_dims = self.backbone.config.hidden_sizes
+        self.backbone = timm.create_model(config.TBACKBONE, pretrained=True, num_classes=0, features_only=True)
         self._insert_cbam_modules()
 
-        feature_dim = self.feature_dims[-1]
+        feature_dim = self.backbone.feature_info.info[-1]['num_chs']
         self.pwca = PairwiseCrossAttention(in_dim=feature_dim)
         self.global_pool = nn.AdaptiveAvgPool2d(1)
 
@@ -73,22 +135,17 @@ class EmbeddingModel(nn.Module):
 
     def _insert_cbam_modules(self):
         self.cbam_stages = nn.ModuleList()
-        for dim in self.feature_dims:
-            self.cbam_stages.append(CBAM(dim))
-
-    def _get_features(self, x):
-        outputs = self.backbone(pixel_values=x, output_hidden_states=True)
-        
-        features = outputs.hidden_states[1:]
-        
-        refined_features = [self.cbam_stages[i](f) for i, f in enumerate(features)]
-        return refined_features[-1]
+        for i, stage_info in enumerate(self.backbone.feature_info.info):
+            self.cbam_stages.append(CBAM(stage_info['num_chs']))
 
     def forward(self, x, labels=None, x_distractor=None):
-        final_features = self._get_features(x)
+        features = self.backbone(x)
+        refined_features = [self.cbam_stages[i](f) for i, f in enumerate(features)]
+        final_features = refined_features[-1]
 
         if self.training and x_distractor is not None:
-            distractor_features = self._get_features(x_distractor)
+            distractor_features = self.backbone(x_distractor)[-1]
+            distractor_features = self.cbam_stages[-1](distractor_features)
             final_features = self.pwca(final_features, distractor_features)
 
         pooled_features = self.global_pool(final_features).flatten(1)
