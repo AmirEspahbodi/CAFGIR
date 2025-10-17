@@ -104,7 +104,7 @@ class TrainingConfig:
 
     # --- Stage 1: Head Warm-up ---
     # --- Stage 1: Head Warm-up ---
-    STAGE1_EPOCHS = 3
+    STAGE1_EPOCHS = 5
     STAGE1_LR = 1e-4
     STAGE1_IMG_SIZE = 224
     STAGE1_BATCH_SIZE = 32  # Can be larger due to smaller image size
@@ -112,7 +112,7 @@ class TrainingConfig:
     STAGE1_AUG_STRENGTH = 0.0 # No Mixup/CutMix during warm-up
 
     # --- Stage 2: Early Full Fine-Tuning ---
-    STAGE2_EPOCHS = 7
+    STAGE2_EPOCHS = 10
     STAGE2_BASE_LR = 5e-6 # Differential LR for backbone
     STAGE2_HEAD_LR = 5e-5 # Differential LR for head
     STAGE2_IMG_SIZE = 320
