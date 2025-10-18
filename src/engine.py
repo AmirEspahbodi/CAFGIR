@@ -9,6 +9,8 @@ from src.models.embedding_model import EmbeddingModel
 from src.losses.hybrid_loss import HybridLoss
 from torchmetrics.classification import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassF1Score
 from torchmetrics import MetricCollection
+# Matplotlib is imported inside the plotting function to make it an optional dependency
+# import matplotlib.pyplot as plt 
 
 class Trainer:
     """
@@ -34,13 +36,20 @@ class Trainer:
         self.train_metrics = self._create_metrics_collection().to(config.DEVICE)
         self.val_metrics = self._create_metrics_collection().to(config.DEVICE)
         
-        # --- CHECKPOINTING INITIALIZATION (NEW) ---
-        # Track the best validation accuracy seen so far.
+        # --- CHECKPOINTING INITIALIZATION ---
         self.best_val_accuracy = 0.0
-        # Define the directory to save checkpoints, default to 'checkpoints'.
         self.checkpoint_dir = getattr(config, 'CHECKPOINT_DIR', 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         print(f"✅ Checkpoints will be saved to '{self.checkpoint_dir}'")
+        
+        # --- HISTORY INITIALIZATION (NEW) ---
+        # This dictionary will store the metrics for each epoch
+        self.history = {
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': []
+        }
 
     # --- NEW METHOD TO SAVE THE BEST MODEL ---
     def _save_checkpoint(self, stage_name, epoch, val_metrics):
@@ -48,7 +57,7 @@ class Trainer:
         Saves the model checkpoint if the current validation accuracy is the best so far.
         """
         current_accuracy = val_metrics['accuracy']
-        if current_accuracy > self.best_val_accuracy:
+        if current_accuracy >= self.best_val_accuracy:
             self.best_val_accuracy = current_accuracy
             
             # Sanitize stage_name to create a valid filename
@@ -221,6 +230,71 @@ class Trainer:
               f"F1: {val_metrics['f1_score']:.4f}")
         print("-" * (len(stage_name) + 20))
 
+    # --- NEW METHOD TO PLOT AND SAVE HISTORY ---
+    def _plot_and_save_history(self):
+        """
+        Plots the training and validation loss and accuracy and saves them as SVG files.
+        """
+        # We import matplotlib here to make it an optional dependency.
+        # If it's not installed, the training will still run, but plots won't be generated.
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("\n⚠️  Matplotlib not found. Skipping plot generation.")
+            print("   Please install it with 'pip install matplotlib' to get training plots.")
+            return
+
+        epochs = range(1, len(self.history['train_loss']) + 1)
+
+        # Plot 1: Training Loss
+        try:
+            plt.figure(figsize=(10, 6))
+            plt.plot(epochs, self.history['train_loss'], label='Training Loss', color='blue', marker='.')
+            plt.title('Training Loss Over Epochs')
+            plt.xlabel('Total Epochs')
+            plt.ylabel('Loss')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(os.path.join(self.checkpoint_dir, 'train_loss.svg'), format='svg')
+            plt.close()
+
+            # Plot 2: Validation Loss
+            plt.figure(figsize=(10, 6))
+            plt.plot(epochs, self.history['val_loss'], label='Validation Loss', color='orange', marker='.')
+            plt.title('Validation Loss Over Epochs')
+            plt.xlabel('Total Epochs')
+            plt.ylabel('Loss')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(os.path.join(self.checkpoint_dir, 'validation_loss.svg'), format='svg')
+            plt.close()
+
+            # Plot 3: Training Accuracy
+            plt.figure(figsize=(10, 6))
+            plt.plot(epochs, self.history['train_acc'], label='Training Accuracy', color='green', marker='.')
+            plt.title('Training Accuracy Over Epochs')
+            plt.xlabel('Total Epochs')
+            plt.ylabel('Accuracy')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(os.path.join(self.checkpoint_dir, 'train_accuracy.svg'), format='svg')
+            plt.close()
+
+            # Plot 4: Validation Accuracy
+            plt.figure(figsize=(10, 6))
+            plt.plot(epochs, self.history['val_acc'], label='Validation Accuracy', color='red', marker='.')
+            plt.title('Validation Accuracy Over Epochs')
+            plt.xlabel('Total Epochs')
+            plt.ylabel('Accuracy')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(os.path.join(self.checkpoint_dir, 'validation_accuracy.svg'), format='svg')
+            plt.close()
+            
+        except Exception as e:
+            print(f"\n⚠️  An error occurred during plot generation: {e}")
+
+
     def run_training_curriculum(self):
         """Executes the full multi-stage training curriculum."""
         print("--- Starting Training Curriculum ---")
@@ -241,8 +315,13 @@ class Trainer:
             train_loss, train_metrics = self._train_one_epoch(train_loader, accumulation_steps_stage1)
             val_loss, val_metrics = self._validate_one_epoch(val_loader)
             self._print_metrics("STAGE 1: Head Warm-up", epoch, stage1_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
-            # --- SAVE BEST MODEL (MODIFIED) ---
             self._save_checkpoint("STAGE 1", epoch, val_metrics)
+            
+            # --- UPDATE HISTORY (NEW) ---
+            self.history['train_loss'].append(train_loss)
+            self.history['train_acc'].append(train_metrics['accuracy'])
+            self.history['val_loss'].append(val_loss)
+            self.history['val_acc'].append(val_metrics['accuracy'])
 
         # --- Stage 2: Early Full Fine-Tuning ---
         print("\n--- STAGE 2: Early Full Fine-Tuning ---")
@@ -262,8 +341,13 @@ class Trainer:
             val_loss, val_metrics = self._validate_one_epoch(val_loader)
             self.scheduler.step()
             self._print_metrics("STAGE 2: Early Fine-Tuning", epoch, stage2_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
-            # --- SAVE BEST MODEL (MODIFIED) ---
             self._save_checkpoint("STAGE 2", epoch, val_metrics)
+            
+            # --- UPDATE HISTORY (NEW) ---
+            self.history['train_loss'].append(train_loss)
+            self.history['train_acc'].append(train_metrics['accuracy'])
+            self.history['val_loss'].append(val_loss)
+            self.history['val_acc'].append(val_metrics['accuracy'])
 
         # --- Stage 3: Final High-Resolution Polishing ---
         print("\n--- STAGE 3: Final High-Resolution Polishing ---")
@@ -282,7 +366,17 @@ class Trainer:
             val_loss, val_metrics = self._validate_one_epoch(val_loader)
             self.scheduler.step()
             self._print_metrics("STAGE 3: Final Polishing", epoch, stage3_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
-            # --- SAVE BEST MODEL (MODIFIED) ---
             self._save_checkpoint("STAGE 3", epoch, val_metrics)
 
+            # --- UPDATE HISTORY (NEW) ---
+            self.history['train_loss'].append(train_loss)
+            self.history['train_acc'].append(train_metrics['accuracy'])
+            self.history['val_loss'].append(val_loss)
+            self.history['val_acc'].append(val_metrics['accuracy'])
+
         print("\n--- Training Finished ---")
+        
+        # --- PLOT AND SAVE HISTORY (NEW) ---
+        print("📊 Generating training history plots...")
+        self._plot_and_save_history()
+        print(f"✅ Plots saved to '{self.checkpoint_dir}'")

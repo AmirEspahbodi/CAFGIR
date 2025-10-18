@@ -5,7 +5,7 @@ class TrainingConfig:
     # ===================================================================
     # Project specific settings
     # ===================================================================
-    DATA_DIR = "/kaggle/input/car-dataset/augmented_car_dataset"
+    DATA_DIR = "D:\\amir_es\\CAFGIR\\augmented_car_dataset"
     # DATA_DIR = "/content/CAFGIR/augmented_car_dataset/"
     NUM_CLASSES = 118 # As per your dataset description
     DEVICE = "cuda"
@@ -15,10 +15,10 @@ class TrainingConfig:
     # ===================================================================
     FBACKBONE = "facebook/convnextv2-tiny-22k-384"
     # facebook/convnextv2-base-22k-384
-    
-    TBACKBONE = "convnextv2_tiny.fcmae_ft_in22k_in1k_384"
-    # convnextv2_base.fcmae_ft_in22k_in1k_384
-    
+
+    TBACKBONE = "convnextv2_base.fcmae_ft_in22k_in1k_384"
+    # convnextv2_tiny.fcmae_ft_in22k_in1k_384
+
     EMBEDDING_DIM = 512
 
     # Sub-center ArcFace settings
@@ -106,30 +106,30 @@ class TrainingConfig:
     STAGE1_EPOCHS = 4
     STAGE1_LR = 1e-3
     STAGE1_IMG_SIZE = 224
-    STAGE1_BATCH_SIZE = 32  # Can be larger due to smaller image size
+    STAGE1_BATCH_SIZE = 64  # Can be larger due to smaller image size
     STAGE1_ACCUMULATION_STEPS = 1
     STAGE1_AUG_STRENGTH = 0.0 # No Mixup/CutMix during warm-up
 
     # --- Stage 2: Early Full Fine-Tuning ---
-    STAGE2_EPOCHS = 7
+    STAGE2_EPOCHS = 10
     STAGE2_BASE_LR = 1e-5 # Differential LR for backbone
     STAGE2_HEAD_LR = 1e-4 # Differential LR for head
     STAGE2_IMG_SIZE = 320
-    STAGE2_BATCH_SIZE = 16
-    STAGE2_ACCUMULATION_STEPS = 2
+    STAGE2_BATCH_SIZE = 8
+    STAGE2_ACCUMULATION_STEPS = 8
     STAGE2_AUG_STRENGTH = 0.2 # Mild Mixup/CutMix alpha
 
     # --- Stage 3: Final High-Resolution Polishing ---
-    STAGE3_EPOCHS = 10
+    STAGE3_EPOCHS = 15
     STAGE3_BASE_LR = 1e-6 # Lower LR for final polishing
     STAGE3_HEAD_LR = 1e-5
     STAGE3_IMG_SIZE = 384
-    STAGE3_BATCH_SIZE = 8
-    STAGE3_ACCUMULATION_STEPS = 4
+    STAGE3_BATCH_SIZE = 4
+    STAGE3_ACCUMULATION_STEPS = 16
     STAGE3_AUG_STRENGTH = 1.0 # Strong Mixup/CutMix alpha
-    
+
     PIN_MEMORY = True
-    
+
     SEED=42
     OUTPUT_DIR='./output'
     CHECKPOINT_DIR = './checkpoints'
