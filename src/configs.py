@@ -1,6 +1,6 @@
 class TrainingConfigBase:
     DATA_DIR = "D:\\amir_es\\car_accessories_dataset_augmented"
-    NUM_CLASSES = 400 # As per your dataset description
+    NUM_CLASSES = 413 # As per your dataset description
     DEVICE = "cuda"
 
     FBACKBONE = "facebook/convnextv2-tiny-22k-384"

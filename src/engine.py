@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 import os
@@ -7,12 +8,16 @@ from src.optimizer.sam import SAM
 from src.data.dataset import create_dataloaders
 from src.models.embedding_model import EmbeddingModel
 from src.losses.hybrid_loss import HybridLoss
-# === CHANGED: Removed all classification metrics ===
+
+# --- MODIFIED IMPORTS ---
+# We still use these for the TRAINING loop proxy task
+from torchmetrics.classification import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassF1Score
 from torchmetrics import MetricCollection
-import torch.nn.functional as F
-from torchmetrics.retrieval import RetrievalRecall
-# ----------------------------------------
-# Matplotlib is imported inside the plotting function to make it an optional dependency
+# NEW: Import the correct retrieval metrics for VALIDATION
+from torchmetrics.retrieval import RetrievalRecall, RetrievalMAP
+# --- END MODIFIED IMPORTS ---
+
+# Matplotlib is imported inside the plotting function
 # import matplotlib.pyplot as plt
 
 class Trainer:
@@ -35,76 +40,54 @@ class Trainer:
         self.optimizer = None
         self.scheduler = None
 
-        # === CHANGED: Use RetrievalRecall for training metrics ===
-        self.train_metrics = MetricCollection({
-            'Recall@1': RetrievalRecall(top_k=1),
-            'Recall@5': RetrievalRecall(top_k=5),
-            'Recall@10': RetrievalRecall(top_k=10)
-        }).to(config.DEVICE)
+        # --- METRICS MODIFIED ---
+        # 1. Train metrics: Still use classification as a proxy task monitor
+        self.train_metrics = self._create_metrics_collection().to(config.DEVICE)
         
-        # === Validation metrics ===
-        self.val_metric1 = RetrievalRecall(top_k=1).to(config.DEVICE)
-        self.val_metric5 = RetrievalRecall(top_k=5).to(config.DEVICE)
-        self.val_metric10 = RetrievalRecall(top_k=10).to(config.DEVICE)
-        # --------------------------------------------------
+        # 2. Validation metrics: Use proper retrieval metrics
+        # We need separate instances for each K in Recall@K
+        self.val_r1 = RetrievalRecall(top_k=1).to(config.DEVICE)
+        self.val_r5 = RetrievalRecall(top_k=5).to(config.DEVICE)
+        self.val_r10 = RetrievalRecall(top_k=10).to(config.DEVICE)
+        self.val_map = RetrievalMAP().to(config.DEVICE)
+        # --- END METRICS MODIFIED ---
 
-        # === CHANGED: Renamed best metric variables ===
-        self.best_val_r1 = 0.0 # Stores best Recall@1
-        self.best_val_r5 = 0.0 # Stores best Recall@5
-        self.best_val_r10 = 0.0 # Stores best Recall@10
-        # ---------------------------------------------
-        
+        self.best_val_accuracy = 0.0 # This will now store the best R@1
         self.checkpoint_dir = getattr(config, 'CHECKPOINT_DIR', 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         print(f"✅ Checkpoints will be saved to '{self.checkpoint_dir}'")
 
-        # === CHANGED: Updated history dictionary keys ===
+        # --- HISTORY MODIFIED ---
         self.history = {
-            'train_loss': [], 'train_r1': [], 'train_r5': [], 'train_r10': [],
-            'val_loss': [], 'val_r1': [], 'val_r5': [], 'val_r10': []
+            'train_loss': [], 'train_acc': [], # Proxy metrics
+            'val_loss': [], 
+            'val_r1': [], 'val_r5': [], 'val_r10': [], 'val_map': []
         }
-        # -----------------------------------------------
+        # --- END HISTORY MODIFIED ---
 
     def _save_checkpoint(self, stage_num, epoch, val_metrics):
-        """Saves the model checkpoint every epoch and tracks the best metrics."""
-        
-        current_r1 = val_metrics['Recall@1']
-        current_r5 = val_metrics['Recall@5']
-        current_r10 = val_metrics['Recall@10']
-        
-        is_best = False
-        if current_r1 > self.best_val_r1:
-            self.best_val_r1 = current_r1
-            is_best = True # R@1 is the primary metric for "best"
+        """Saves the model checkpoint if the current R@1 is the best so far."""
+        # --- MODIFIED TO USE R@1 ---
+        current_r1 = val_metrics['r1']
+        if current_r1 >= self.best_val_accuracy:
+            self.best_val_accuracy = current_r1
+            # Update filename to reflect R@1
+            checkpoint_filename = f"best_model_stage{stage_num}_epoch{epoch+1}_R1@{current_r1:.4f}.pth"
+            checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
             
-        if current_r5 > self.best_val_r5:
-            self.best_val_r5 = current_r5
+            checkpoint = {
+                'stage_num': stage_num,
+                'epoch': epoch + 1,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+                'best_val_accuracy': self.best_val_accuracy, # Stores best R@1
+                'history': self.history
+            }
             
-        if current_r10 > self.best_val_r10:
-            self.best_val_r10 = current_r10
-        
-        # === CHANGED: Save model every epoch, removed 'if' condition ===
-        checkpoint_filename = f"model_stage{stage_num}_epoch{epoch+1}_r1{current_r1:.4f}_r5{current_r5:.4f}_r10{current_r10:.4f}.pth"
-        checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
-        
-        checkpoint = {
-            'stage_num': stage_num,
-            'epoch': epoch + 1,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
-            'best_val_r1': self.best_val_r1, # Track best R@1
-            'best_val_r5': self.best_val_r5, # Track best R@5
-            'best_val_r10': self.best_val_r10, # Track best R@10
-            'history': self.history
-        }
-        
-        torch.save(checkpoint, checkpoint_path)
-        print(f"\nCheckpoint saved to {checkpoint_path}")
-        if is_best:
-            print(f"✨ New best model found! Recall@1 improved to {current_r1:.4f}.")
-        # -------------------------------------------------------------
-        
+            torch.save(checkpoint, checkpoint_path)
+            print(f"\n✨ New best model found! Recall@1 improved to {current_r1:.4f}. Checkpoint saved to {checkpoint_path}")
+        # --- END MODIFIED ---
 
     def _load_checkpoint(self):
         """Loads a checkpoint for resuming training."""
@@ -121,19 +104,23 @@ class Trainer:
         
         try:
             self.model.load_state_dict(checkpoint['model_state_dict'])
-            # === CHANGED: Load best R@1, R@5, R@10 ===
-            self.best_val_r1 = checkpoint.get('best_val_r1', 0.0)
-            self.best_val_r5 = checkpoint.get('best_val_r5', 0.0)
-            self.best_val_r10 = checkpoint.get('best_val_r10', 0.0)
-            # ----------------------------------------
+            # best_val_accuracy will hold the best R@1 from the checkpoint
+            self.best_val_accuracy = checkpoint.get('best_val_accuracy', 0.0) 
             self.history = checkpoint.get('history', self.history)
-            print(f"✅ Model weights, best R@1 ({self.best_val_r1:.4f}), and history loaded.")
+            print(f"✅ Model weights, best R@1 ({self.best_val_accuracy:.4f}), and history loaded.")
             return checkpoint
         except Exception as e:
             print(f"❌ Error loading checkpoint: {e}. Starting from scratch.")
             return None
 
-    # === CHANGED: Removed _create_metrics_collection as it's no longer needed ===
+    def _create_metrics_collection(self):   
+        """Helper function to create a standardized collection of metrics (for training proxy task)."""
+        return MetricCollection({
+            'accuracy': MulticlassAccuracy(num_classes=self.config.NUM_CLASSES, average='macro'),
+            'precision': MulticlassPrecision(num_classes=self.config.NUM_CLASSES, average='macro'),
+            'recall': MulticlassRecall(num_classes=self.config.NUM_CLASSES, average='macro'),
+            'f1_score': MulticlassF1Score(num_classes=self.config.NUM_CLASSES, average='macro')
+        })
 
     def _get_optimizer(self, stage_config):
         """Initializes the optimizer with differential learning rates."""
@@ -145,36 +132,30 @@ class Trainer:
             {'params': self.model.arcface_head.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
         ]
         base_optimizer = optim.AdamW(param_groups, weight_decay=self.config.WEIGHT_DECAY)
-        # Use SAM optimizer only in stage 2 and 3 (when differential LR is specified)
         if 'base_lr' in stage_config:
             print("Using SAM optimizer.")
-            # Note: SAM's base_optimizer expects param_groups, not a constructed optimizer
-            base_optimizer = optim.AdamW
-            return SAM(param_groups, base_optimizer, rho=self.config.SAM_RHO, lr=stage_config['lr'], weight_decay=self.config.WEIGHT_DECAY)
+            return SAM(self.model.parameters(), base_optimizer, rho=self.config.SAM_RHO)
         else:
             print("Using AdamW optimizer.")
-            return base_optimizer # This is the AdamW optimizer created earlier
-
+            return base_optimizer
 
     def _adjust_learning_rate(self, stage_config):
         """Dynamically adjusts the learning rate for a new training stage."""
         general_lr = stage_config.get('lr')
         base_lr = stage_config.get('base_lr', general_lr)
         head_lr = stage_config.get('head_lr', general_lr)
-
         if base_lr is None or head_lr is None:
             raise ValueError("Learning rate configuration is missing.")
-            
-        # Get the optimizer, which might be SAM
-        optimizer = self.optimizer.base_optimizer if isinstance(self.optimizer, SAM) else self.optimizer
-
-        for i, param_group in enumerate(optimizer.param_groups):
+        for i, param_group in enumerate(self.optimizer.param_groups):
              param_group['lr'] = base_lr if i == 0 else head_lr
         print(f"Learning rates adjusted: Backbone LR = {base_lr}, Head LR = {head_lr}")
 
-
     def _train_one_epoch(self, dataloader, accumulation_steps=1):
-        """Runs a single training epoch and computes in-batch retrieval metrics."""
+        """
+        Runs a single training epoch.
+        We still use classification metrics here as a FAST, BATCH-WISE PROXY
+        to monitor if the ArcFace head is learning to separate classes.
+        """
         self.model.train()
         self.train_metrics.reset()
         train_loss = 0.0
@@ -186,24 +167,19 @@ class Trainer:
             images, labels, distractor_images = images.to(self.config.DEVICE), labels.to(self.config.DEVICE), distractor_images.to(self.config.DEVICE)
 
             def forward_pass():
-                # Pass all required inputs
                 return self.model(images, labels, distractor_images)
 
             if isinstance(self.optimizer, SAM):
-                # First forward/backward pass
                 outputs = forward_pass()
                 loss = self.loss_fn(outputs, labels)
                 loss = loss / accumulation_steps
                 loss.backward()
                 self.optimizer.first_step(zero_grad=True)
 
-                # Second forward/backward pass
                 outputs_2 = forward_pass()
                 loss_2 = self.loss_fn(outputs_2, labels)
                 loss_2 = loss_2 / accumulation_steps
                 loss_2.backward()
-                self.optimizer.second_step(zero_grad=False) # zero_grad=False to accumulate
-                
                 final_outputs, loss_val = outputs_2, loss_2.item() * accumulation_steps
             else:
                 outputs = forward_pass()
@@ -213,147 +189,136 @@ class Trainer:
                 final_outputs, loss_val = outputs, loss.item() * accumulation_steps
 
             if (i + 1) % accumulation_steps == 0:
-                if not isinstance(self.optimizer, SAM): # SAM's step is handled above
+                if isinstance(self.optimizer, SAM):
+                    self.optimizer.second_step(zero_grad=True)
+                else:
                     self.optimizer.step()
                 self.optimizer.zero_grad()
 
-            # === Calculate in-batch retrieval metrics ===
-            emb_batch = final_outputs['embedding'].detach()
-            labels_batch = labels.detach()
-            
-            B = labels_batch.size(0)
-            if B <= 1: # Need at least 2 samples to compare
-                continue
-                
-            device = emb_batch.device
-
-            # Normalize embeddings and compute (B, B) similarity matrix
-            emb_norm = F.normalize(emb_batch, p=2, dim=1)
-            sim_matrix = emb_norm @ emb_norm.t() # (B, B)
-
-            # Build (B, B) target matrix (True if same label and not unseen)
-            labels_row = labels_batch.unsqueeze(0) # (1, B)
-            labels_col = labels_batch.unsqueeze(1) # (B, 1)
-            target_matrix = (labels_col == labels_row) & (labels_col >= 0) & (labels_row >= 0)
-            
-            # Exclude self-matches
-            diag_mask = torch.eye(B, dtype=torch.bool, device=device)
-            target_matrix = target_matrix & (~diag_mask)
-
-            # Flatten and create indexes
-            preds_flat = sim_matrix.flatten() # (B*B,)
-            targets_flat = target_matrix.flatten() # (B*B,)
-            indexes = torch.arange(B, device=device).repeat_interleave(B) # (B*B,)
-            
-            # Update metrics if there are any valid positive pairs in the batch
-            if targets_flat.any():
-                self.train_metrics.update(preds_flat, targets_flat, indexes=indexes)
-            # ----------------------------------------------------
-
+            # Update proxy classification metrics
+            preds = final_outputs['logits'].detach()
+            self.train_metrics.update(preds, labels)
             train_loss += loss_val
-            progress_bar.set_postfix(loss=f"{loss_val:.4f}")
+            progress_bar.set_postfix(loss=loss_val)
 
         avg_loss = train_loss / len(dataloader)
         metrics_output = self.train_metrics.compute()
-        # === CHANGED: Ensure all metrics are returned ===
         scalar_metrics = {k: v.item() for k, v in metrics_output.items()}
-        scalar_metrics.setdefault('Recall@1', 0.0)
-        scalar_metrics.setdefault('Recall@5', 0.0)
-        scalar_metrics.setdefault('Recall@10', 0.0)
-        # -----------------------------------------------
         return avg_loss, scalar_metrics
 
-    # === FUNCTION REWRITTEN FOR RETRIEVAL ===
+    # --- FUNCTION WITH FIX ---
     def _validate_one_epoch(self, dataloader):
-        """Runs a single validation epoch and computes retrieval metrics."""
+        """
+        Runs a single validation epoch, evaluating based on
+        retrieval metrics (R@k, mAP).
+        """
         self.model.eval()
-        self.val_metric1.reset()
-        self.val_metric5.reset()
-        self.val_metric10.reset()
+        
+        # Reset all retrieval metrics
+        self.val_r1.reset()
+        self.val_r5.reset()
+        self.val_r10.reset()
+        self.val_map.reset()
+        
         val_loss = 0.0
-
         all_embeddings = []
         all_labels = []
 
         progress_bar = tqdm(dataloader, desc="Validation", leave=False)
+
         with torch.no_grad():
-            # Validation loader now returns (images, labels)
             for images, labels in progress_bar:
-                images, labels = images.to(self.config.DEVICE), labels.to(self.config.DEVICE)
+                images, labels = (
+                    images.to(self.config.DEVICE),
+                    labels.to(self.config.DEVICE)
+                )
 
-                # 1. Get Embeddings
-                outputs = self.model(images)         # model(images) returns {'embedding': ...}
-                all_embeddings.append(outputs['embedding'])
-                all_labels.append(labels)
+                # Get model output
+                outputs = self.model(images, labels, x_distractor=None)
+                
+                # We can still compute loss for monitoring
+                if outputs['logits'] is not None:
+                    try:
+                        loss = self.loss_fn(outputs, labels)
+                        val_loss += loss.item()
+                    except Exception as e:
+                        # This might fail if val labels are not in train set
+                        # which is fine, we just care about embeddings
+                        pass 
 
-                # 2. (Optional) Compute loss for "seen" classes only
-                seen_mask = labels >= 0
-                if seen_mask.any():
-                    seen_images = images[seen_mask]
-                    seen_labels = labels[seen_mask]
+                # Store embeddings and labels for metric calculation
+                all_embeddings.append(outputs['embedding'].detach())
+                all_labels.append(labels.detach())
 
-                    # Re-run model on seen data *with* labels to get logits
-                    loss_outputs = self.model(seen_images, seen_labels)
-                    loss = self.loss_fn(loss_outputs, seen_labels)
-                    val_loss += loss.item()
+        avg_loss = val_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+        
+        if not all_embeddings:
+            print("Validation set empty. Skipping retrieval metrics.")
+            return avg_loss, {'r1': 0.0, 'r5': 0.0, 'r10': 0.0, 'map': 0.0}
 
-        avg_loss = val_loss / len(dataloader)  # Note: This is loss for SEEN classes only
-
-        # ===== Build all-vs-all similarity and relevance targets for torchmetrics =====
-        all_embeddings = torch.cat(all_embeddings, dim=0)   # shape (N, D)
-        all_labels = torch.cat(all_labels, dim=0)           # shape (N,)
-
-        N = all_labels.size(0)
-        device = self.config.DEVICE
-
-        if N == 0:
-            # nothing to compute
-            scalar_metrics = {'Recall@1': 0.0, 'Recall@5': 0.0, 'Recall@10': 0.0}
-            return avg_loss, scalar_metrics
-
-        # Normalize embeddings and compute similarity matrix (cosine via dot of normalized vectors)
-        emb_norm = F.normalize(all_embeddings, p=2, dim=1)
-        sim_matrix = emb_norm @ emb_norm.t()   # shape (N, N), higher => more similar
-
-        # Build target matrix: True if same label and label != -1 (unseen)
-        labels_row = all_labels.unsqueeze(0)   # (1, N)
-        labels_col = all_labels.unsqueeze(1)   # (N, 1)
-        target_matrix = (labels_col == labels_row) & (labels_col >= 0) & (labels_row >= 0)
-        # Optionally exclude self-matches (common practice)
-        exclude_self = True
-        if exclude_self:
-            diag_mask = torch.eye(N, dtype=torch.bool, device=device)
-            target_matrix = target_matrix & (~diag_mask)
-
-        # Flatten preds and targets and create indexes mapping queries
-        preds_flat = sim_matrix.flatten()                       # float scores
-        targets_flat = target_matrix.flatten()                  # boolean relevance
-        # indexes: for each query i there are N entries (its comparisons vs all gallery items)
-        indexes = torch.arange(N, device=device).repeat_interleave(N)  # shape (N*N,)
-
-        # Update each retrieval metric (they were instantiated with top_k=1,5,10)
-        # IMPORTANT: pass `indexes=indexes` (not query_indexes/gallery_indexes)
-        self.val_metric1.update(preds_flat, targets_flat, indexes=indexes)
-        r1 = self.val_metric1.compute().item()
-        self.val_metric5.update(preds_flat, targets_flat, indexes=indexes)
-        r5 = self.val_metric5.compute().item()
-        self.val_metric10.update(preds_flat, targets_flat, indexes=indexes)
-        r10 = self.val_metric10.compute().item()
-
-        scalar_metrics = {'Recall@1': r1, 'Recall@5': r5, 'Recall@10': r10}
+        # --- Retrieval Metric Calculation ---
+        # 1. Concatenate all batches
+        all_embeddings = torch.cat(all_embeddings, dim=0)
+        all_labels = torch.cat(all_labels, dim=0)
+        
+        N = all_labels.shape[0]
+        device = all_labels.device
+        
+        # 2. Normalize embeddings for cosine similarity
+        all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
+        
+        # 3. Compute pairwise cosine similarity matrix (N, D) x (D, N) -> (N, N)
+        sim_matrix = torch.matmul(all_embeddings_norm, all_embeddings_norm.T)
+        
+        # 4. Create the boolean target matrix (N, N)
+        target_matrix = all_labels.unsqueeze(1) == all_labels.unsqueeze(0)
+        
+        # 5. Mask out diagonal (self-retrieval)
+        sim_matrix.fill_diagonal_(-float('inf'))
+        target_matrix.fill_diagonal_(False)
+        
+        # 6. Flatten matrices for per-query evaluation
+        # For retrieval metrics, we need to process each query separately
+        # Create indexes that identify which query each prediction belongs to
+        
+        # Create a flattened index tensor: [0,0,0,...,1,1,1,...,2,2,2,...]
+        # where each query i appears N times (once for each potential match)
+        indexes_flat = torch.arange(N, device=device).repeat_interleave(N)
+        
+        # Flatten similarity scores and targets
+        preds_flat = sim_matrix.flatten()
+        target_flat = target_matrix.flatten()
+        
+        # 7. Update all metrics with flattened tensors
+        self.val_r1.update(preds_flat, target_flat, indexes=indexes_flat)
+        self.val_r5.update(preds_flat, target_flat, indexes=indexes_flat)
+        self.val_r10.update(preds_flat, target_flat, indexes=indexes_flat)
+        self.val_map.update(preds_flat, target_flat, indexes=indexes_flat)
+        
+        # 8. Compute final scalar values
+        scalar_metrics = {
+            'r1': self.val_r1.compute().item(),
+            'r5': self.val_r5.compute().item(),
+            'r10': self.val_r10.compute().item(),
+            'map': self.val_map.compute().item(),
+        }
+    
         return avg_loss, scalar_metrics
 
-    # === CHANGED: Print R@1, R@5, R@10 for both train and val ===
+    # --- MODIFIED FUNCTION ---
     def _print_metrics(self, stage_name, epoch, num_epochs, train_loss, train_metrics, val_loss, val_metrics):
         """Prints a formatted summary of the epoch's metrics."""
         print(f"\n--- {stage_name} | Epoch {epoch+1}/{num_epochs} ---")
-        print(f"  Train -> Loss: {train_loss:.4f} | R@1, R@5, R@10: {train_metrics['Recall@1']:.4f}, {train_metrics['Recall@5']:.4f}, {train_metrics['Recall@10']:.4f}")
-        print(f"  Valid -> Loss: {val_loss:.4f} | R@1, R@5, R@10: {val_metrics['Recall@1']:.4f}, {val_metrics['Recall@5']:.4f}, {val_metrics['Recall@10']:.4f}")
+        # Train metrics are still proxy classification metrics
+        print(f"  Train -> Loss: {train_loss:.4f} | Acc (proxy): {train_metrics['accuracy']:.4f} | F1 (proxy): {train_metrics['f1_score']:.4f}")
+        # Valid metrics are now proper retrieval metrics
+        print(f"  Valid -> Loss: {val_loss:.4f} | R@1: {val_metrics['r1']:.4f} | R@5: {val_metrics['r5']:.4f} | mAP: {val_metrics['map']:.4f}")
         print("-" * (len(stage_name) + 20))
+    # --- END MODIFIED FUNCTION ---
 
-    # === CHANGED: Update plot labels for Recall@1 ===
+    # --- MODIFIED FUNCTION ---
     def _plot_and_save_history(self):
-        """Plots the training and validation loss/metrics and saves them as SVG files."""
+        """Plots the training/validation loss and train_acc/validation_R1."""
         try:
             import matplotlib.pyplot as plt
         except ImportError:
@@ -365,33 +330,22 @@ class Trainer:
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
         plt.plot(epochs, self.history['train_loss'], label='Training Loss', color='blue', marker='.')
-        plt.plot(epochs, self.history['val_loss'], label='Validation Loss (Seen Classes)', color='orange', marker='.')
+        plt.plot(epochs, self.history['val_loss'], label='Validation Loss', color='orange', marker='.')
         plt.title('Loss Over Epochs')
         plt.xlabel('Total Epochs'); plt.ylabel('Loss'); plt.legend(); plt.grid(True)
-        # Plot Recall@1
-        plt.subplot(1, 2, 2)
-        plt.plot(epochs, self.history['train_r1'], label='Training Recall@1', color='green', marker='.')
-        plt.plot(epochs, self.history['val_r1'], label='Validation Recall@1', color='red', marker='.')
-        plt.title('Train vs. Validation Recall@1')
-        plt.xlabel('Total Epochs'); plt.ylabel('Recall@1'); plt.legend(); plt.grid(True)
-
-        # Plot Recall@5
-        plt.subplot(1, 2, 3)
-        plt.plot(epochs, self.history['train_r5'], label='Training Recall@5', color='green', marker='.')
-        plt.plot(epochs, self.history['val_r5'], label='Validation Recall@5', color='red', marker='.')
-        plt.title('Train vs. Validation Recall@5')
-        plt.xlabel('Total Epochs'); plt.ylabel('Recall@5'); plt.legend(); plt.grid(True)
         
-        # Plot Recall@10
-        plt.subplot(1, 2, 4)
-        plt.plot(epochs, self.history['train_r10'], label='Training Recall@10', color='green', marker='.')
-        plt.plot(epochs, self.history['val_r10'], label='Validation Recall@10', color='red', marker='.')
-        plt.title('Train vs. Validation Recall@10')
-        plt.xlabel('Total Epochs'); plt.ylabel('Recall@10'); plt.legend(); plt.grid(True)
+        # Plot Accuracy
+        plt.subplot(1, 2, 2)
+        plt.plot(epochs, self.history['train_acc'], label='Training Accuracy (Proxy)', color='green', marker='.')
+        # Plot R@1 instead of 'val_acc'
+        plt.plot(epochs, self.history['val_r1'], label='Validation Recall@1', color='red', marker='.')
+        plt.title('Accuracy (Proxy) / Recall@1 Over Epochs')
+        plt.xlabel('Total Epochs'); plt.ylabel('Accuracy / R@1'); plt.legend(); plt.grid(True)
         
         plt.tight_layout()
         plt.savefig(os.path.join(self.checkpoint_dir, 'training_history.svg'), format='svg')
         plt.close()
+    # --- END MODIFIED FUNCTION ---
 
     def run_training_curriculum(self):
         """Executes the full multi-stage training curriculum with resume capability."""
@@ -403,27 +357,20 @@ class Trainer:
         stages = [
             {
                 "name": "STAGE 1: Head Warm-up", "stage_num": 1,
-                "config": {'epochs': self.config.STAGE1_EPOCHS, 'lr': self.config.STAGE1_LR, 'img_size': self.config.STAGE1_IMG_SIZE, 'batch_size': self.config.STAGE1_BATCH_SIZE, 'aug_strength': 'mild'}, # Use 'mild'
+                "config": {'epochs': self.config.STAGE1_EPOCHS, 'lr': self.config.STAGE1_LR, 'img_size': self.config.STAGE1_IMG_SIZE, 'batch_size': self.config.STAGE1_BATCH_SIZE, 'aug_strength': self.config.STAGE1_AUG_STRENGTH},
                 "accumulation_steps": self.config.STAGE1_ACCUMULATION_STEPS, "setup_fn": self.model.freeze_backbone, "use_scheduler": False
             },
             {
                 "name": "STAGE 2: Early Full Fine-Tuning", "stage_num": 2,
-                "config": {'epochs': self.config.STAGE2_EPOCHS, 'base_lr': self.config.STAGE2_BASE_LR, 'head_lr': self.config.STAGE2_HEAD_LR, 'img_size': self.config.STAGE2_IMG_SIZE, 'batch_size': self.config.STAGE2_BATCH_SIZE, 'aug_strength': 'moderate'}, # Use 'moderate'
+                "config": {'epochs': self.config.STAGE2_EPOCHS, 'base_lr': self.config.STAGE2_BASE_LR, 'head_lr': self.config.STAGE2_HEAD_LR, 'img_size': self.config.STAGE2_IMG_SIZE, 'batch_size': self.config.STAGE2_BATCH_SIZE, 'aug_strength': self.config.STAGE2_AUG_STRENGTH},
                 "accumulation_steps": self.config.STAGE2_ACCUMULATION_STEPS, "setup_fn": self.model.unfreeze_backbone, "use_scheduler": True
             },
             {
                 "name": "STAGE 3: Final High-Res Polishing", "stage_num": 3,
-                "config": {'epochs': self.config.STAGE3_EPOCHS, 'base_lr': self.config.STAGE3_BASE_LR, 'head_lr': self.config.STAGE3_HEAD_LR, 'img_size': self.config.STAGE3_IMG_SIZE, 'batch_size': self.config.STAGE3_BATCH_SIZE, 'aug_strength': 'aggressive'}, # Use 'aggressive'
+                "config": {'epochs': self.config.STAGE3_EPOCHS, 'base_lr': self.config.STAGE3_BASE_LR, 'head_lr': self.config.STAGE3_HEAD_LR, 'img_size': self.config.STAGE3_IMG_SIZE, 'batch_size': self.config.STAGE3_BATCH_SIZE, 'aug_strength': self.config.STAGE3_AUG_STRENGTH},
                 "accumulation_steps": self.config.STAGE3_ACCUMULATION_STEPS, "setup_fn": None, "use_scheduler": True
             }
         ]
-        
-        # Update stage configs to use string-based aug_strength
-        for stage_data in stages:
-            if stage_data['stage_num'] == 1: stage_data['config']['aug_strength'] = 'mild' # From STAGE1_AUG_STRENGTH = 0.0
-            elif stage_data['stage_num'] == 2: stage_data['config']['aug_strength'] = 'moderate' # From STAGE2_AUG_STRENGTH = 0.2
-            elif stage_data['stage_num'] == 3: stage_data['config']['aug_strength'] = 'aggressive' # From STAGE3_AUG_STRENGTH = 1.0
-
 
         for stage_data in stages:
             stage_num, stage_name, stage_config = stage_data["stage_num"], stage_data["name"], stage_data["config"]
@@ -455,24 +402,25 @@ class Trainer:
                 train_loss, train_metrics = self._train_one_epoch(train_loader, stage_data["accumulation_steps"])
                 val_loss, val_metrics = self._validate_one_epoch(val_loader)
                 if self.scheduler: self.scheduler.step()
-                self._print_metrics(stage_name, epoch, stage_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
                 
-                # === CHANGED: Save checkpoint every epoch ===
-                self._save_checkpoint(stage_num, epoch, val_metrics)
-                
-                # === CHANGED: Store all R@k metrics in history ===
+                # --- MODIFIED HISTORY APPENDING ---
+                # Append proxy train metrics
                 self.history['train_loss'].append(train_loss)
-                self.history['train_r1'].append(train_metrics['Recall@1'])
-                self.history['train_r5'].append(train_metrics['Recall@5'])
-                self.history['train_r10'].append(train_metrics['Recall@10'])
+                self.history['train_acc'].append(train_metrics['accuracy'])
                 
+                # Append validation retrieval metrics
                 self.history['val_loss'].append(val_loss)
-                self.history['val_r1'].append(val_metrics['Recall@1'])
-                self.history['val_r5'].append(val_metrics['Recall@5'])
-                self.history['val_r10'].append(val_metrics['Recall@10'])
-                # --------------------------------------------------
+                self.history['val_r1'].append(val_metrics['r1'])
+                self.history['val_r5'].append(val_metrics['r5'])
+                self.history['val_r10'].append(val_metrics['r10'])
+                self.history['val_map'].append(val_metrics['map'])
+                # --- END MODIFIED ---
+                
+                # Print and save
+                self._print_metrics(stage_name, epoch, stage_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
+                self._save_checkpoint(stage_num, epoch, val_metrics) # This now uses R@1
 
         print("\n--- Training Finished ---")
         print("📊 Generating training history plots...")
-        self._plot_and_save_history()
+        self.plot_and_save_history() # This now plots R@1
         print(f"✅ Plots saved to '{self.checkpoint_dir}'")
