@@ -5,8 +5,8 @@ import os
 
 # --- Configuration ---
 # Set the base paths for your two folders
-SOURCE_BASE_DIR = Path("D:\\amir_es\\car_accessories_dataset_augmented\\new_noisy_aug_512")
-TARGET_BASE_DIR = Path("D:\\amir_es\\car_accessories_dataset_augmented\\new_aug")
+SOURCE_BASE_DIR = Path("D:\\amir_es\\car_accessories_dataset\\train_noisy_aug_512")
+TARGET_BASE_DIR = Path("D:\\amir_es\\car_accessories_dataset\\train_aug")
 # ---------------------
 
 def main():

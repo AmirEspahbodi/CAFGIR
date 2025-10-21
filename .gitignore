@@ -197,3 +197,4 @@ base_1_best_model_STAGE_3_epoch4_acc0.7966.pth
 large_1__best_model_STAGE_3_epoch4_acc0.9661.pth
 augmented_car_dataset/
 checkpoints/
+output/

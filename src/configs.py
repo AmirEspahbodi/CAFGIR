@@ -123,11 +123,11 @@ class TrainingConfigBase:
     OUTPUT_DIR='./output'
     CHECKPOINT_DIR = './checkpoints'
 
-    RESUME = True  # Set to True to resume training from a checkpoint
+    RESUME = False  # Set to True to resume training from a checkpoint
     # Example: RESUME_CHECKPOINT_PATH = "checkpoints/best_model_stage2_epoch3_acc0.8500.pth"
-    RESUME_CHECKPOINT_PATH = "D:\\amir_es\\CAFGIR\\checkpoints\\best_model_stage1_epoch4_acc0.0000.pth" 
+    RESUME_CHECKPOINT_PATH = "" 
     RESUME_STAGE = 1            # The stage number (1, 2, or 3) to resume from
-    RESUME_EPOCH = 4            # The epoch number within that stage to resume from. (0-indexed)
+    RESUME_EPOCH = 6            # The epoch number within that stage to resume from. (0-indexed)
 
 
 
