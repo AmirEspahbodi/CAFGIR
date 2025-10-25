@@ -36,7 +36,7 @@ class Trainer:
         """
         self.config = config
         self.model = model.to(config.DEVICE)
-        self.loss_fn = criterion
+        self.loss_fn = criterion.to(config.DEVICE)
         self.optimizer = None
         self.scheduler = None
 
@@ -72,21 +72,21 @@ class Trainer:
         if current_r1 >= self.best_val_accuracy:
             self.best_val_accuracy = current_r1
             # Update filename to reflect R@1
-            checkpoint_filename = f"best_model_stage{stage_num}_epoch{epoch+1}_R1@{current_r1:.4f}.pth"
-            checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
-            
-            checkpoint = {
-                'stage_num': stage_num,
-                'epoch': epoch + 1,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
-                'best_val_accuracy': self.best_val_accuracy, # Stores best R@1
-                'history': self.history
-            }
-            
-            torch.save(checkpoint, checkpoint_path)
-            print(f"\n✨ New best model found! Recall@1 improved to {current_r1:.4f}. Checkpoint saved to {checkpoint_path}")
+        checkpoint_filename = f"{self.config.BASE_MODEL}_best_model_stage{stage_num}_epoch{epoch+1}_R1@{current_r1:.4f}.pth"
+        checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
+        
+        checkpoint = {
+            'stage_num': stage_num,
+            'epoch': epoch + 1,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+            'best_val_accuracy': self.best_val_accuracy, # Stores best R@1
+            'history': self.history
+        }
+        
+        torch.save(checkpoint, checkpoint_path)
+        print(f"\n✨ New best model found! Recall@1 improved to {current_r1:.4f}. Checkpoint saved to {checkpoint_path}")
         # --- END MODIFIED ---
 
     def _load_checkpoint(self):
@@ -122,22 +122,40 @@ class Trainer:
             'f1_score': MulticlassF1Score(num_classes=self.config.NUM_CLASSES, average='macro')
         })
 
+    # --- FUNCTION WITH FIX ---
     def _get_optimizer(self, stage_config):
         """Initializes the optimizer with differential learning rates."""
+        
+        # (1) Define the parameter groups with differential LRs
         param_groups = [
             {'params': self.model.backbone.parameters(), 'lr': stage_config.get('base_lr', stage_config['lr'])},
             {'params': self.model.cbam_stages.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
             {'params': self.model.pwca.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
             {'params': self.model.embedding_head.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
-            {'params': self.model.arcface_head.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
         ]
-        base_optimizer = optim.AdamW(param_groups, weight_decay=self.config.WEIGHT_DECAY)
-        if 'base_lr' in stage_config:
+        
+        # (2) Define the base optimizer CLASS, not an instance
+        base_optimizer_class = optim.AdamW
+        
+        # (3) Collect kwargs for the base optimizer
+        optimizer_kwargs = {'weight_decay': self.config.WEIGHT_DECAY}
+
+        if 'base_lr' in stage_config: # True for Stages 2 & 3
             print("Using SAM optimizer.")
-            return SAM(self.model.parameters(), base_optimizer, rho=self.config.SAM_RHO)
-        else:
+            
+            # (4) Pass the DLR groups, the optimizer CLASS, and the kwargs to SAM
+            return SAM(
+                param_groups,                 # <--- FIX 1: Pass DLR groups as `params`
+                base_optimizer_class,         # <--- FIX 2: Pass AdamW class as `base_optimizer`
+                rho=self.config.SAM_RHO,
+                **optimizer_kwargs            # <--- FIX 3: Pass kwargs to SAM
+            )
+        else: # Stage 1
             print("Using AdamW optimizer.")
-            return base_optimizer
+            
+            # (5) Create the AdamW instance normally for stage 1
+            return base_optimizer_class(param_groups, **optimizer_kwargs)
+    # --- END FUNCTION WITH FIX ---
 
     def _adjust_learning_rate(self, stage_config):
         """Dynamically adjusts the learning rate for a new training stage."""
@@ -146,7 +164,13 @@ class Trainer:
         head_lr = stage_config.get('head_lr', general_lr)
         if base_lr is None or head_lr is None:
             raise ValueError("Learning rate configuration is missing.")
-        for i, param_group in enumerate(self.optimizer.param_groups):
+        
+        # For SAM, the base_optimizer.param_groups holds the DLRs
+        optimizer_param_groups = self.optimizer.base_optimizer.param_groups \
+            if isinstance(self.optimizer, SAM) \
+            else self.optimizer.param_groups
+
+        for i, param_group in enumerate(optimizer_param_groups):
              param_group['lr'] = base_lr if i == 0 else head_lr
         print(f"Learning rates adjusted: Backbone LR = {base_lr}, Head LR = {head_lr}")
 
@@ -206,7 +230,6 @@ class Trainer:
         scalar_metrics = {k: v.item() for k, v in metrics_output.items()}
         return avg_loss, scalar_metrics
 
-    # --- FUNCTION WITH FIX ---
     def _validate_one_epoch(self, dataloader):
         """
         Runs a single validation epoch, evaluating based on
@@ -302,21 +325,17 @@ class Trainer:
             'r10': self.val_r10.compute().item(),
             'map': self.val_map.compute().item(),
         }
-    
         return avg_loss, scalar_metrics
-
-    # --- MODIFIED FUNCTION ---
+    
     def _print_metrics(self, stage_name, epoch, num_epochs, train_loss, train_metrics, val_loss, val_metrics):
         """Prints a formatted summary of the epoch's metrics."""
         print(f"\n--- {stage_name} | Epoch {epoch+1}/{num_epochs} ---")
         # Train metrics are still proxy classification metrics
         print(f"  Train -> Loss: {train_loss:.4f} | Acc (proxy): {train_metrics['accuracy']:.4f} | F1 (proxy): {train_metrics['f1_score']:.4f}")
         # Valid metrics are now proper retrieval metrics
-        print(f"  Valid -> Loss: {val_loss:.4f} | R@1: {val_metrics['r1']:.4f} | R@5: {val_metrics['r5']:.4f} | mAP: {val_metrics['map']:.4f}")
+        print(f"  Valid -> Loss: {val_loss:.4f} | R@1: {val_metrics['r1']:.4f} | R@5: {val_metrics['r5']:.4f} | R@10: {val_metrics['r10']:.4f} | mAP: {val_metrics['map']:.4f}")
         print("-" * (len(stage_name) + 20))
-    # --- END MODIFIED FUNCTION ---
 
-    # --- MODIFIED FUNCTION ---
     def _plot_and_save_history(self):
         """Plots the training/validation loss and train_acc/validation_R1."""
         try:
@@ -345,7 +364,6 @@ class Trainer:
         plt.tight_layout()
         plt.savefig(os.path.join(self.checkpoint_dir, 'training_history.svg'), format='svg')
         plt.close()
-    # --- END MODIFIED FUNCTION ---
 
     def run_training_curriculum(self):
         """Executes the full multi-stage training curriculum with resume capability."""
@@ -422,5 +440,5 @@ class Trainer:
 
         print("\n--- Training Finished ---")
         print("📊 Generating training history plots...")
-        self.plot_and_save_history() # This now plots R@1
+        self._plot_and_save_history() # This now plots R@1
         print(f"✅ Plots saved to '{self.checkpoint_dir}'")
