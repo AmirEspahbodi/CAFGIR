@@ -59,7 +59,6 @@ class EmbeddingModel(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(inter_dim, config.EMBEDDING_DIM)
         )
-        
 
     def forward(self, x, labels=None, x_distractor=None):
         # 1. Get multi-scale features from the backbone

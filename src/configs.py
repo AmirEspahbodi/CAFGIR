@@ -42,7 +42,7 @@ class TrainingConfigBase:
     NUM_WORKERS = 4
 
     # --- Stage 1: Head Warm-up ---
-    STAGE1_EPOCHS = 4
+    STAGE1_EPOCHS = 0
     STAGE1_LR = 1e-3
     STAGE1_IMG_SIZE = 224
     STAGE1_BATCH_SIZE = 32  # Can be larger due to smaller image size
@@ -60,7 +60,7 @@ class TrainingConfigBase:
     # --- New settings for Stage 2 ---
     STAGE2_SAMPLER_P = 8 # Number of classes per batch
     STAGE2_SAMPLER_K = 2 # Number of images per class (P * K = 16)
-    STAGE2_WARMUP_RATIO = 0.1 # 10% of total steps for linear warm-up
+    STAGE2_WARMUP_EPOCHS = 1 # Linear warm-up for the first epoch
    
     # --- Stage 3: Final High-Resolution Polishing ---
     STAGE3_EPOCHS = 15
@@ -73,7 +73,7 @@ class TrainingConfigBase:
     # --- New settings for Stage 3 ---
     STAGE3_SAMPLER_P = 4 # Number of classes per batch
     STAGE3_SAMPLER_K = 2 # Number of images per class (P * K = 8)
-    STAGE3_WARMUP_RATIO = 0.1 # 10% of total steps for linear warm-up
+    STAGE3_WARMUP_EPOCHS = 1 # Linear warm-up for the first epoch
     
     PIN_MEMORY = True
     
@@ -81,11 +81,11 @@ class TrainingConfigBase:
     OUTPUT_DIR='./output'
     CHECKPOINT_DIR = './checkpoints'
 
-    RESUME = False  # Set to True to resume training from a checkpoint
+    RESUME = True  # Set to True to resume training from a checkpoint
     # Example: RESUME_CHECKPOINT_PATH = "checkpoints/best_model_stage2_epoch3_acc0.8500.pth"
-    RESUME_CHECKPOINT_PATH = "" 
+    RESUME_CHECKPOINT_PATH = "D:\\amir_es\\CAFGIR\\checkpoints\\tiny_proxy_best_model_stage1_epoch4_R1@0.0356.pth" 
     RESUME_STAGE = 1            # The stage number (1, 2, or 3) to resume from
-    RESUME_EPOCH = 6            # The epoch number within that stage to resume from. (0-indexed)
+    RESUME_EPOCH = 4            # The epoch number within that stage to resume from. (0-indexed)
 
     GEM_P_INIT = 3.0 # Initial 'p' value for GeM pooling. 1.0 = AvgPool, >1.0 = emphasizes salient features
 
@@ -99,7 +99,7 @@ class TrainingConfigTiny(TrainingConfigBase):
     pass
 
 
-class TrainingConfigLarge(TrainingConfigBase): # Renamed from 'Base' to 'Large' to avoid confusion
+class TrainingConfigLarge(TrainingConfigBase): # Renamed from 'Base' to 'Large'
     BASE_MODEL = "base"
     
     # Recalculate P/K for different batch sizes if needed
@@ -123,3 +123,4 @@ class TrainingConfigLarge(TrainingConfigBase): # Renamed from 'Base' to 'Large' 
 
 # Set the active configuration
 TrainingConfig = TrainingConfigTiny
+

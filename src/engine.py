@@ -297,7 +297,7 @@ class Trainer:
                     'epochs': self.config.STAGE2_EPOCHS, 'base_lr': self.config.STAGE2_BASE_LR, 'head_lr': self.config.STAGE2_HEAD_LR, 
                     'img_size': self.config.STAGE2_IMG_SIZE, 'batch_size': self.config.STAGE2_BATCH_SIZE,
                     'sampler_p': self.config.STAGE2_SAMPLER_P, 'sampler_k': self.config.STAGE2_SAMPLER_K,
-                    'warmup_ratio': self.config.STAGE2_WARMUP_RATIO
+                    'warmup_epochs': self.config.STAGE2_WARMUP_EPOCHS
                 },
                 "accumulation_steps": self.config.STAGE2_ACCUMULATION_STEPS, "setup_fn": self.model.unfreeze_backbone, "use_scheduler": True
             },
@@ -307,7 +307,7 @@ class Trainer:
                     'epochs': self.config.STAGE3_EPOCHS, 'base_lr': self.config.STAGE3_BASE_LR, 'head_lr': self.config.STAGE3_HEAD_LR, 
                     'img_size': self.config.STAGE3_IMG_SIZE, 'batch_size': self.config.STAGE3_BATCH_SIZE,
                     'sampler_p': self.config.STAGE3_SAMPLER_P, 'sampler_k': self.config.STAGE3_SAMPLER_K,
-                    'warmup_ratio': self.config.STAGE3_WARMUP_RATIO
+                    'warmup_epochs': self.config.STAGE3_WARMUP_EPOCHS
                 },
                 "accumulation_steps": self.config.STAGE3_ACCUMULATION_STEPS, "setup_fn": None, "use_scheduler": True
             }
@@ -330,20 +330,22 @@ class Trainer:
             if self.optimizer is None: self.optimizer = self._get_optimizer(stage_config)
             else: self._adjust_learning_rate(stage_config)
 
-            # --- MODIFIED: New Scheduler Logic (step-based, with warmup) ---
+            # --- MODIFIED: New Scheduler Logic (step-based, with warmup by EPOCH) ---
             if stage_data["use_scheduler"]:
                 # Total optimizer steps = (num_batches / accum_steps) * num_epochs
                 # Note: len(train_loader) IS num_batches (from batch_sampler or dataloader)
                 optimizer_steps_per_epoch = len(train_loader) // stage_data["accumulation_steps"]
                 total_optimizer_steps = optimizer_steps_per_epoch * stage_config['epochs']
-                warmup_ratio = stage_config.get('warmup_ratio', 0.0)
+                
+                # Get warmup epochs from config
+                warmup_epochs = stage_config.get('warmup_epochs', 0)
+                warmup_steps = optimizer_steps_per_epoch * warmup_epochs
 
-                if warmup_ratio > 0:
-                    warmup_steps = int(total_optimizer_steps * warmup_ratio)
+                if warmup_steps > 0:
                     cosine_steps = total_optimizer_steps - warmup_steps
                     
-                    if warmup_steps == 0 or cosine_steps <= 0:
-                         print(f"⚠️  Warmup/Cosine steps invalid (warmup: {warmup_steps}, cosine: {cosine_steps}). Defaulting to CosineAnnealingLR.")
+                    if cosine_steps <= 0:
+                         print(f"⚠️  Warmup epochs ({warmup_epochs}) is >= total epochs ({stage_config['epochs']}). Defaulting to CosineAnnealingLR for all steps.")
                          self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
                             self.optimizer, T_max=total_optimizer_steps, eta_min=1e-7
                          )
@@ -357,7 +359,7 @@ class Trainer:
                         self.scheduler = optim.lr_scheduler.SequentialLR(
                             self.optimizer, schedulers=[scheduler1, scheduler2], milestones=[warmup_steps]
                         )
-                        print(f"✅ Using SequentialLR: {warmup_steps} warm-up steps + {cosine_steps} cosine decay steps.")
+                        print(f"✅ Using SequentialLR: {warmup_epochs} epoch(s) warm-up ({warmup_steps} steps) + {cosine_steps} cosine decay steps.")
                 else:
                     print("✅ Using CosineAnnealingLR (no warmup).")
                     self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -379,7 +381,7 @@ class Trainer:
                     print("Scheduler state found, but re-initializing and fast-forwarding.")
                     num_steps_to_skip = optimizer_steps_per_epoch * start_epoch
                     for _ in range(num_steps_to_skip):
-                        self.scheduler.step()
+                        if self.scheduler: self.scheduler.step()
                     print(f"✅ Scheduler fast-forwarded by {num_steps_to_skip} steps.")
 
                 current_stage_start_epoch = start_epoch
@@ -391,7 +393,6 @@ class Trainer:
                 val_loss, val_metrics = self._validate_one_epoch(val_loader)
                 
                 # --- MODIFIED: Scheduler step is now in _train_one_epoch ---
-                # if self.scheduler: self.scheduler.step() # <-- REMOVED
                 
                 self.history['train_loss'].append(train_loss)
                 self.history['val_loss'].append(val_loss)
@@ -445,3 +446,4 @@ class Trainer:
         plt.tight_layout()
         plt.savefig(os.path.join(self.checkpoint_dir, 'training_history.svg'), format='svg')
         plt.close()
+
