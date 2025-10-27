@@ -1,100 +1,91 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-from transformers import ConvNextV2Model
-from src.models.CBAM import CBAM
 from src.models.PWCA import PairwiseCrossAttention
-
-
-class SubCenterArcFaceHead(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.k = config.ARCFACE_SUB_CENTERS_K
-        self.margin = config.ARCFACE_MARGIN
-        self.scale = config.ARCFACE_SCALE
-        
-        self.weight = nn.Parameter(torch.Tensor(config.NUM_CLASSES * self.k, config.EMBEDDING_DIM))
-        nn.init.xavier_uniform_(self.weight)
-
-        self.cos_m = math.cos(self.margin)
-        self.sin_m = math.sin(self.margin)
-        self.th = math.cos(math.pi - self.margin)
-        self.mm = math.sin(math.pi - self.margin) * self.margin
-
-    def forward(self, embedding, labels):
-        embedding_norm = F.normalize(embedding, p=2, dim=1)
-        kernel_norm = F.normalize(self.weight, p=2, dim=1)
-        
-        cos_theta = F.linear(embedding_norm, kernel_norm)
-        cos_theta = cos_theta.view(-1, self.config.NUM_CLASSES, self.k)
-
-        one_hot_labels = F.one_hot(labels, num_classes=self.config.NUM_CLASSES).view(-1, self.config.NUM_CLASSES, 1)
-        positive_sub_centers_cos = cos_theta * one_hot_labels
-        hardest_positive_cos, _ = torch.max(positive_sub_centers_cos, dim=2)
-        
-        cos_theta_yi = torch.gather(hardest_positive_cos, 1, labels.view(-1, 1)).squeeze(1)
-
-        sine = torch.sqrt(1.0 - torch.pow(cos_theta_yi, 2).clamp(0, 1))
-        phi = cos_theta_yi * self.cos_m - sine * self.sin_m
-        phi = torch.where(cos_theta_yi > self.th, phi, cos_theta_yi - self.mm)
-
-        max_cos_theta_j, _ = torch.max(cos_theta, dim=2)
-        
-        output_logits = max_cos_theta_j
-        output_logits.scatter_(1, labels.view(-1, 1), phi.view(-1, 1))
-        
-        output_logits *= self.scale
-        return output_logits
-
-
-
 import timm
+
+class GeM(nn.Module):
+    """
+    Generalized-Mean (GeM) Pooling layer.
+    As proposed in "Fine-tuning CNN Image Retrieval with No Human Annotation"
+    (https://arxiv.org/abs/1711.02512)
+    """
+    def __init__(self, p=3.0, eps=1e-6):
+        super(GeM, self).__init__()
+        self.p = nn.Parameter(torch.ones(1) * p)
+        self.eps = eps
+
+    def forward(self, x):
+        # x shape: B, C, H, W
+        # F.avg_pool2d is used for spatial pooling.
+        # We clamp x to avoid nan gradients when x is 0.
+        return F.avg_pool2d(x.clamp(min=self.eps).pow(self.p), (x.size(-2), x.size(-1))).pow(1./self.p)
+
+    def __repr__(self):
+        return self.__class__.__name__ + '(' + 'p=' + '{:.4f}'.format(self.p.data.tolist()[0]) + ', ' + 'eps=' + str(self.eps) + ')'
+
+
 class EmbeddingModel(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
 
+        # 1. Initialize Backbone
+        # We set features_only=True to get intermediate feature maps
         self.backbone = timm.create_model(config.TBACKBONE, pretrained=True, num_classes=0, features_only=True)
-        self._insert_cbam_modules()
+        
+        # 2. Get feature dimensions for multi-scale concatenation
+        # We take the last two feature maps (e.g., stage 3 and stage 4)
+        feature_info = self.backbone.feature_info.info
+        self.feature_dim_m = feature_info[-2]['num_chs'] # Medium-res features (e.g., from stage 3)
+        self.feature_dim_l = feature_info[-1]['num_chs'] # Large-res (coarse) features (e.g., from stage 4)
+        
+        # 3. Initialize PWCA
+        # PWCA will operate on the coarsest (final) feature map
+        self.pwca = PairwiseCrossAttention(in_dim=self.feature_dim_l)
 
-        feature_dim = self.backbone.feature_info.info[-1]['num_chs']
-        self.pwca = PairwiseCrossAttention(in_dim=feature_dim)
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        # 4. Initialize GeM Pooling Layers (one for each scale)
+        self.global_pool_m = GeM(p=config.GEM_P_INIT)
+        self.global_pool_l = GeM(p=config.GEM_P_INIT)
 
+        # 5. Initialize Embedding Head
+        # The head now takes the concatenated features as input
+        pooled_dim_total = self.feature_dim_m + self.feature_dim_l
+        inter_dim = config.EMBEDDING_HEAD_INTERMEDIATE_DIM
+        
         self.embedding_head = nn.Sequential(
-            nn.Linear(feature_dim, feature_dim // 2),
-            nn.BatchNorm1d(feature_dim // 2),
+            nn.Linear(pooled_dim_total, inter_dim),
+            nn.LayerNorm(inter_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(feature_dim // 2, config.EMBEDDING_DIM)
+            nn.Linear(inter_dim, config.EMBEDDING_DIM)
         )
         
-        self.arcface_head = SubCenterArcFaceHead(config)
-
-    def _insert_cbam_modules(self):
-        self.cbam_stages = nn.ModuleList()
-        for i, stage_info in enumerate(self.backbone.feature_info.info):
-            self.cbam_stages.append(CBAM(stage_info['num_chs']))
 
     def forward(self, x, labels=None, x_distractor=None):
+        # 1. Get multi-scale features from the backbone
         features = self.backbone(x)
-        refined_features = [self.cbam_stages[i](f) for i, f in enumerate(features)]
-        final_features = refined_features[-1]
+        f_m = features[-2] # Medium-res feature map
+        f_l = features[-1] # Large-res (coarse) feature map
 
+        # 2. Apply PWCA (only during training and if distractor is provided)
         if self.training and x_distractor is not None:
-            distractor_features = self.backbone(x_distractor)[-1]
-            distractor_features = self.cbam_stages[-1](distractor_features)
-            final_features = self.pwca(final_features, distractor_features)
+            # Get distractor features (only the last map is needed for PWCA)
+            distractor_features_l = self.backbone(x_distractor)[-1]
+            # Apply PWCA to the coarsest feature map
+            f_l = self.pwca(f_l, distractor_features_l)
 
-        pooled_features = self.global_pool(final_features).flatten(1)
+        # 3. Apply GeM pooling to both feature maps
+        pooled_f_m = self.global_pool_m(f_m).flatten(1)
+        pooled_f_l = self.global_pool_l(f_l).flatten(1)
+        
+        # 4. Concatenate pooled features
+        pooled_features = torch.cat((pooled_f_m, pooled_f_l), dim=1)
+
+        # 5. Get final embedding
         embedding = self.embedding_head(pooled_features)
         
-        # logits = None
-        # if labels is not None:
-        #     logits = self.arcface_head(embedding, labels)
-        
-        return {"embedding": embedding, "logits": None}
+        logits = None
+        return {"embedding": embedding, "logits": logits}
 
     def freeze_backbone(self):
         print("Freezing backbone.")

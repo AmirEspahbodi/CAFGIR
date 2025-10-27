@@ -45,3 +45,23 @@ class ProxyAnchorLoss(nn.Module):
         
         loss = (torch.mean(pos_term) + torch.mean(neg_term))
         return loss
+
+
+class ProxyLoss(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        
+        self.proxy_anchor_loss = ProxyAnchorLoss(
+            num_classes=config.NUM_CLASSES,
+            embedding_dim=config.EMBEDDING_DIM,
+            alpha=config.PROXY_ANCHOR_ALPHA,
+            delta=config.PROXY_ANCHOR_DELTA,
+            device=config.DEVICE
+        )
+        
+
+    def forward(self, model_output, labels):
+        proxy_loss = self.proxy_anchor_loss(model_output["embedding"], labels)
+        
+        return proxy_loss 

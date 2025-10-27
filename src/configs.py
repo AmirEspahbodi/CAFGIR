@@ -29,56 +29,6 @@ class TrainingConfigBase:
     LABEL_SMOOTHING = 0.1
 
     # ===================================================================
-    # Training Settings
-    # ===================================================================
-    # General
-    BATCH_SIZE = 32
-    NUM_EPOCHS = 40
-    NUM_WORKERS = 4
-
-    # Optimizer settings
-    BASE_LR = 1e-4
-    HEAD_LR = 1e-3
-    WEIGHT_DECAY = 5e-4
-    SAM_RHO = 0.05 # For the SAM optimizer
-
-    # Training curriculum stages
-    HEAD_WARMUP_EPOCHS = 3
-    EARLY_STAGE_EPOCHS = 7 # Head warmup + this = 10 epochs
-    # The rest will be the final polishing stage
-
-    # Image sizes for progressive learning
-    LOW_RES = 224
-    MID_RES = 320
-    HIGH_RES = 384
-
-    # ===================================================================
-    # Augmentation Settings
-    # ===================================================================
-    MIXUP_CUTMIX_ALPHA_LOW = 0.2
-    MIXUP_CUTMIX_ALPHA_HIGH = 1.0
-
-    EMBEDDING_DIM = 512
-
-    # Sub-center ArcFace settings
-    ARCFACE_SUB_CENTERS_K = 3
-    ARCFACE_SCALE = 64.0
-    ARCFACE_MARGIN = 0.50
-
-    # ===================================================================
-    # Loss Function Settings
-    # ===================================================================
-    # Proxy-Anchor settings
-    PROXY_ANCHOR_ALPHA = 32.0
-    PROXY_ANCHOR_DELTA = 0.1
-
-    # Hybrid loss weight
-    HYBRID_LOSS_ALPHA = 1.0
-
-    # Label Smoothing setting for the classification loss
-    LABEL_SMOOTHING = 0.1
-
-    # ===================================================================
     # Optimizer Settings
     # ===================================================================
     BASE_LR = 1e-4
@@ -92,7 +42,7 @@ class TrainingConfigBase:
     NUM_WORKERS = 4
 
     # --- Stage 1: Head Warm-up ---
-    STAGE1_EPOCHS = 5
+    STAGE1_EPOCHS = 1
     STAGE1_LR = 1e-3
     STAGE1_IMG_SIZE = 224
     STAGE1_BATCH_SIZE = 32  # Can be larger due to smaller image size
@@ -104,18 +54,26 @@ class TrainingConfigBase:
     STAGE2_BASE_LR = 1e-5 # Differential LR for backbone
     STAGE2_HEAD_LR = 1e-4 # Differential LR for head
     STAGE2_IMG_SIZE = 320
-    STAGE2_BATCH_SIZE = 16
+    STAGE2_BATCH_SIZE = 16 # Must be STAGE2_SAMPLER_P * STAGE2_SAMPLER_K
     STAGE2_ACCUMULATION_STEPS = 2
     STAGE2_AUG_STRENGTH = 0.2 # Mild Mixup/CutMix alpha
+    # --- New settings for Stage 2 ---
+    STAGE2_SAMPLER_P = 8 # Number of classes per batch
+    STAGE2_SAMPLER_K = 2 # Number of images per class (P * K = 16)
+    STAGE2_WARMUP_RATIO = 0.1 # 10% of total steps for linear warm-up
    
     # --- Stage 3: Final High-Resolution Polishing ---
     STAGE3_EPOCHS = 15
     STAGE3_BASE_LR = 1e-6 # Lower LR for final polishing
     STAGE3_HEAD_LR = 1e-5
     STAGE3_IMG_SIZE = 384
-    STAGE3_BATCH_SIZE = 8
+    STAGE3_BATCH_SIZE = 8 # Must be STAGE3_SAMPLER_P * STAGE3_SAMPLER_K
     STAGE3_ACCUMULATION_STEPS = 4
     STAGE3_AUG_STRENGTH = 1.0 # Strong Mixup/CutMix alpha
+    # --- New settings for Stage 3 ---
+    STAGE3_SAMPLER_P = 4 # Number of classes per batch
+    STAGE3_SAMPLER_K = 2 # Number of images per class (P * K = 8)
+    STAGE3_WARMUP_RATIO = 0.1 # 10% of total steps for linear warm-up
     
     PIN_MEMORY = True
     
@@ -129,6 +87,11 @@ class TrainingConfigBase:
     RESUME_STAGE = 1            # The stage number (1, 2, or 3) to resume from
     RESUME_EPOCH = 6            # The epoch number within that stage to resume from. (0-indexed)
 
+    GEM_P_INIT = 3.0 # Initial 'p' value for GeM pooling. 1.0 = AvgPool, >1.0 = emphasizes salient features
+
+    # Multi-Scale Feature Settings
+    # Intermediate dimension for the 2-layer embedding head
+    EMBEDDING_HEAD_INTERMEDIATE_DIM = 1024 
 
 
 class TrainingConfigTiny(TrainingConfigBase):
@@ -136,16 +99,21 @@ class TrainingConfigTiny(TrainingConfigBase):
     pass
 
 
-class TrainingConfigBase(TrainingConfigBase):
+class TrainingConfigLarge(TrainingConfigBase): # Renamed from 'Base' to 'Large' to avoid confusion
     BASE_MODEL = "base"
-    STAGE1_BATCH_SIZE = 64
-    STAGE1_ACCUMULATION_STEPS = 1
+    
+    # Recalculate P/K for different batch sizes if needed
+    STAGE1_BATCH_SIZE = 32 # P=8, K=4 (or disable P-K for stage 1)
+    
+    STAGE2_BATCH_SIZE = 16 # P=8, K=2
+    STAGE2_SAMPLER_P = 8
+    STAGE2_SAMPLER_K = 2
+    STAGE2_ACCUMULATION_STEPS = 4
 
-    STAGE2_BATCH_SIZE = 8
-    STAGE2_ACCUMULATION_STEPS = 8
-
-    STAGE3_BATCH_SIZE = 4
-    STAGE3_ACCUMULATION_STEPS = 16
+    STAGE3_BATCH_SIZE = 8 # P=4, K=2
+    STAGE3_SAMPLER_P = 4
+    STAGE3_SAMPLER_K = 2
+    STAGE3_ACCUMULATION_STEPS = 8
 
     STAGE1_EPOCHS = 7
     STAGE2_EPOCHS = 15
@@ -153,4 +121,5 @@ class TrainingConfigBase(TrainingConfigBase):
 
     TBACKBONE = "convnextv2_base.fcmae_ft_in22k_in1k_384"
 
+# Set the active configuration
 TrainingConfig = TrainingConfigTiny

@@ -1,78 +1,44 @@
+# FILE: engine.py
+
 import torch
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 import os
 import torch.optim as optim
-from src.optimizer.sam import SAM
 from src.data.dataset import create_dataloaders
-from src.models.embedding_model import EmbeddingModel
-from src.losses.hybrid_loss import HybridLoss
-
-# --- MODIFIED IMPORTS ---
-# We still use these for the TRAINING loop proxy task
-from torchmetrics.classification import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassF1Score
-from torchmetrics import MetricCollection
-# NEW: Import the correct retrieval metrics for VALIDATION
 from torchmetrics.retrieval import RetrievalRecall, RetrievalMAP
-# --- END MODIFIED IMPORTS ---
-
-# Matplotlib is imported inside the plotting function
-# import matplotlib.pyplot as plt
 
 class Trainer:
-    """
-    Handles the model training curriculum, including multi-stage training,
-    optimization, validation, metric reporting, and checkpointing with resume capability.
-    """
-    def __init__(self, model, criterion, config):
-        """
-        Initializes the Trainer.
-
-        Args:
-            model (nn.Module): The embedding model to be trained.
-            criterion (nn.Module): The loss function.
-            config (TrainingConfig): A configuration object with training parameters.
-        """
+    def __init__(self, model, criterion, config, loss_name):
         self.config = config
         self.model = model.to(config.DEVICE)
         self.loss_fn = criterion.to(config.DEVICE)
         self.optimizer = None
         self.scheduler = None
+        self.loss_name = loss_name
 
-        # --- METRICS MODIFIED ---
-        # 1. Train metrics: Still use classification as a proxy task monitor
-        self.train_metrics = self._create_metrics_collection().to(config.DEVICE)
-        
-        # 2. Validation metrics: Use proper retrieval metrics
-        # We need separate instances for each K in Recall@K
         self.val_r1 = RetrievalRecall(top_k=1).to(config.DEVICE)
         self.val_r5 = RetrievalRecall(top_k=5).to(config.DEVICE)
         self.val_r10 = RetrievalRecall(top_k=10).to(config.DEVICE)
         self.val_map = RetrievalMAP().to(config.DEVICE)
-        # --- END METRICS MODIFIED ---
 
-        self.best_val_accuracy = 0.0 # This will now store the best R@1
+        self.best_val_accuracy = 0.0 
         self.checkpoint_dir = getattr(config, 'CHECKPOINT_DIR', 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         print(f"✅ Checkpoints will be saved to '{self.checkpoint_dir}'")
 
-        # --- HISTORY MODIFIED ---
         self.history = {
-            'train_loss': [], 'train_acc': [], # Proxy metrics
+            'train_loss': [], 
             'val_loss': [], 
             'val_r1': [], 'val_r5': [], 'val_r10': [], 'val_map': []
         }
-        # --- END HISTORY MODIFIED ---
 
     def _save_checkpoint(self, stage_num, epoch, val_metrics):
         """Saves the model checkpoint if the current R@1 is the best so far."""
-        # --- MODIFIED TO USE R@1 ---
         current_r1 = val_metrics['r1']
         if current_r1 >= self.best_val_accuracy:
             self.best_val_accuracy = current_r1
-            # Update filename to reflect R@1
-        checkpoint_filename = f"{self.config.BASE_MODEL}_best_model_stage{stage_num}_epoch{epoch+1}_R1@{current_r1:.4f}.pth"
+        checkpoint_filename = f"{self.config.BASE_MODEL}_{self.loss_name}_best_model_stage{stage_num}_epoch{epoch+1}_R1@{current_r1:.4f}.pth"
         checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
         
         checkpoint = {
@@ -81,13 +47,13 @@ class Trainer:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+            'loss_fn_state_dict': self.loss_fn.state_dict(), 
             'best_val_accuracy': self.best_val_accuracy, # Stores best R@1
             'history': self.history
         }
         
         torch.save(checkpoint, checkpoint_path)
         print(f"\n✨ New best model found! Recall@1 improved to {current_r1:.4f}. Checkpoint saved to {checkpoint_path}")
-        # --- END MODIFIED ---
 
     def _load_checkpoint(self):
         """Loads a checkpoint for resuming training."""
@@ -104,7 +70,7 @@ class Trainer:
         
         try:
             self.model.load_state_dict(checkpoint['model_state_dict'])
-            # best_val_accuracy will hold the best R@1 from the checkpoint
+            self.loss_fn.load_state_dict(checkpoint['loss_fn_state_dict'])
             self.best_val_accuracy = checkpoint.get('best_val_accuracy', 0.0) 
             self.history = checkpoint.get('history', self.history)
             print(f"✅ Model weights, best R@1 ({self.best_val_accuracy:.4f}), and history loaded.")
@@ -113,75 +79,54 @@ class Trainer:
             print(f"❌ Error loading checkpoint: {e}. Starting from scratch.")
             return None
 
-    def _create_metrics_collection(self):   
-        """Helper function to create a standardized collection of metrics (for training proxy task)."""
-        return MetricCollection({
-            'accuracy': MulticlassAccuracy(num_classes=self.config.NUM_CLASSES, average='macro'),
-            'precision': MulticlassPrecision(num_classes=self.config.NUM_CLASSES, average='macro'),
-            'recall': MulticlassRecall(num_classes=self.config.NUM_CLASSES, average='macro'),
-            'f1_score': MulticlassF1Score(num_classes=self.config.NUM_CLASSES, average='macro')
-        })
 
-    # --- FUNCTION WITH FIX ---
     def _get_optimizer(self, stage_config):
         """Initializes the optimizer with differential learning rates."""
-        
-        # (1) Define the parameter groups with differential LRs
+        general_lr = stage_config.get('lr')
+        base_lr = stage_config.get('base_lr', general_lr)
+        head_lr = stage_config.get('head_lr', general_lr)
+
+        if base_lr is None or head_lr is None:
+             raise ValueError(
+                 "Learning rate not configured. "
+                 "Please provide 'lr' or ('base_lr' and 'head_lr') in stage config."
+            )
+
         param_groups = [
-            {'params': self.model.backbone.parameters(), 'lr': stage_config.get('base_lr', stage_config['lr'])},
-            {'params': self.model.cbam_stages.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
-            {'params': self.model.pwca.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
-            {'params': self.model.embedding_head.parameters(), 'lr': stage_config.get('head_lr', stage_config['lr'])},
+            {'params': self.model.backbone.parameters(), 'lr': base_lr},
+            {'params': self.model.pwca.parameters(), 'lr': head_lr},
+            {'params': self.model.embedding_head.parameters(), 'lr': head_lr},
+            {'params': self.model.global_pool_m.parameters(), 'lr': head_lr},
+            {'params': self.model.global_pool_l.parameters(), 'lr': head_lr},
+            {'params': self.loss_fn.parameters(), 'lr': head_lr},
         ]
         
-        # (2) Define the base optimizer CLASS, not an instance
         base_optimizer_class = optim.AdamW
-        
-        # (3) Collect kwargs for the base optimizer
         optimizer_kwargs = {'weight_decay': self.config.WEIGHT_DECAY}
 
-        if 'base_lr' in stage_config: # True for Stages 2 & 3
-            print("Using SAM optimizer.")
-            
-            # (4) Pass the DLR groups, the optimizer CLASS, and the kwargs to SAM
-            return SAM(
-                param_groups,                 # <--- FIX 1: Pass DLR groups as `params`
-                base_optimizer_class,         # <--- FIX 2: Pass AdamW class as `base_optimizer`
-                rho=self.config.SAM_RHO,
-                **optimizer_kwargs            # <--- FIX 3: Pass kwargs to SAM
-            )
-        else: # Stage 1
-            print("Using AdamW optimizer.")
-            
-            # (5) Create the AdamW instance normally for stage 1
-            return base_optimizer_class(param_groups, **optimizer_kwargs)
-    # --- END FUNCTION WITH FIX ---
+        print(f"Using AdamW optimizer. Backbone LR: {base_lr}, Head/Loss LR: {head_lr}")
+        return base_optimizer_class(param_groups, **optimizer_kwargs)
 
     def _adjust_learning_rate(self, stage_config):
         """Dynamically adjusts the learning rate for a new training stage."""
         general_lr = stage_config.get('lr')
         base_lr = stage_config.get('base_lr', general_lr)
         head_lr = stage_config.get('head_lr', general_lr)
+        
         if base_lr is None or head_lr is None:
             raise ValueError("Learning rate configuration is missing.")
         
-        # For SAM, the base_optimizer.param_groups holds the DLRs
-        optimizer_param_groups = self.optimizer.base_optimizer.param_groups \
-            if isinstance(self.optimizer, SAM) \
-            else self.optimizer.param_groups
+        optimizer_param_groups = self.optimizer.param_groups
 
         for i, param_group in enumerate(optimizer_param_groups):
+             # This sets the *initial* LR for the new stage.
+             # The scheduler will then take over.
              param_group['lr'] = base_lr if i == 0 else head_lr
-        print(f"Learning rates adjusted: Backbone LR = {base_lr}, Head LR = {head_lr}")
+             
+        print(f"Learning rates reset for new stage: Backbone LR = {base_lr}, Head LR = {head_lr}")
 
     def _train_one_epoch(self, dataloader, accumulation_steps=1):
-        """
-        Runs a single training epoch.
-        We still use classification metrics here as a FAST, BATCH-WISE PROXY
-        to monitor if the ArcFace head is learning to separate classes.
-        """
         self.model.train()
-        self.train_metrics.reset()
         train_loss = 0.0
         self.optimizer.zero_grad() 
         
@@ -190,54 +135,47 @@ class Trainer:
         for i, (images, labels, distractor_images) in enumerate(progress_bar):
             images, labels, distractor_images = images.to(self.config.DEVICE), labels.to(self.config.DEVICE), distractor_images.to(self.config.DEVICE)
 
-            def forward_pass():
-                return self.model(images, labels, distractor_images)
+            
+            outputs = self.model(images, labels, distractor_images)
+            loss = self.loss_fn(outputs, labels) 
+            
+            loss = loss / accumulation_steps
+            
+            loss.backward()
+            loss_val = loss.item() * accumulation_steps 
 
-            if isinstance(self.optimizer, SAM):
-                outputs = forward_pass()
-                loss = self.loss_fn(outputs, labels)
-                loss = loss / accumulation_steps
-                loss.backward()
-                self.optimizer.first_step(zero_grad=True)
-
-                outputs_2 = forward_pass()
-                loss_2 = self.loss_fn(outputs_2, labels)
-                loss_2 = loss_2 / accumulation_steps
-                loss_2.backward()
-                final_outputs, loss_val = outputs_2, loss_2.item() * accumulation_steps
-            else:
-                outputs = forward_pass()
-                loss = self.loss_fn(outputs, labels)
-                loss = loss / accumulation_steps
-                loss.backward()
-                final_outputs, loss_val = outputs, loss.item() * accumulation_steps
 
             if (i + 1) % accumulation_steps == 0:
-                if isinstance(self.optimizer, SAM):
-                    self.optimizer.second_step(zero_grad=True)
-                else:
-                    self.optimizer.step()
+                self.optimizer.step()
+                
+                # --- MODIFIED: Step scheduler *after* optimizer step ---
+                if self.scheduler:
+                    self.scheduler.step()
+                # --- END MODIFICATION ---
+                
                 self.optimizer.zero_grad()
 
-            # Update proxy classification metrics
-            preds = final_outputs['logits'].detach()
-            self.train_metrics.update(preds, labels)
             train_loss += loss_val
-            progress_bar.set_postfix(loss=loss_val)
+            
+            # Log current LR from the first param group (backbone)
+            current_lr = self.optimizer.param_groups[0]['lr']
+            progress_bar.set_postfix(loss=loss_val, lr=f"{current_lr:.1e}")
+        
+        # Handle last steps if not perfectly divisible by accumulation_steps
+        if (len(dataloader) % accumulation_steps) != 0:
+            self.optimizer.step()
+            # --- MODIFIED: Step scheduler *after* optimizer step ---
+            if self.scheduler:
+                self.scheduler.step()
+            # --- END MODIFICATION ---
+            self.optimizer.zero_grad()
 
         avg_loss = train_loss / len(dataloader)
-        metrics_output = self.train_metrics.compute()
-        scalar_metrics = {k: v.item() for k, v in metrics_output.items()}
-        return avg_loss, scalar_metrics
+        return avg_loss, {} 
 
     def _validate_one_epoch(self, dataloader):
-        """
-        Runs a single validation epoch, evaluating based on
-        retrieval metrics (R@k, mAP).
-        """
         self.model.eval()
         
-        # Reset all retrieval metrics
         self.val_r1.reset()
         self.val_r5.reset()
         self.val_r10.reset()
@@ -256,20 +194,11 @@ class Trainer:
                     labels.to(self.config.DEVICE)
                 )
 
-                # Get model output
                 outputs = self.model(images, labels, x_distractor=None)
                 
-                # We can still compute loss for monitoring
-                if outputs['logits'] is not None:
-                    try:
-                        loss = self.loss_fn(outputs, labels)
-                        val_loss += loss.item()
-                    except Exception as e:
-                        # This might fail if val labels are not in train set
-                        # which is fine, we just care about embeddings
-                        pass 
+                loss = self.loss_fn(outputs, labels)
+                val_loss += loss.item()
 
-                # Store embeddings and labels for metric calculation
                 all_embeddings.append(outputs['embedding'].detach())
                 all_labels.append(labels.detach())
 
@@ -279,7 +208,6 @@ class Trainer:
             print("Validation set empty. Skipping retrieval metrics.")
             return avg_loss, {'r1': 0.0, 'r5': 0.0, 'r10': 0.0, 'map': 0.0}
 
-        # --- Retrieval Metric Calculation ---
         # 1. Concatenate all batches
         all_embeddings = torch.cat(all_embeddings, dim=0)
         all_labels = torch.cat(all_labels, dim=0)
@@ -301,14 +229,7 @@ class Trainer:
         target_matrix.fill_diagonal_(False)
         
         # 6. Flatten matrices for per-query evaluation
-        # For retrieval metrics, we need to process each query separately
-        # Create indexes that identify which query each prediction belongs to
-        
-        # Create a flattened index tensor: [0,0,0,...,1,1,1,...,2,2,2,...]
-        # where each query i appears N times (once for each potential match)
         indexes_flat = torch.arange(N, device=device).repeat_interleave(N)
-        
-        # Flatten similarity scores and targets
         preds_flat = sim_matrix.flatten()
         target_flat = target_matrix.flatten()
         
@@ -330,14 +251,12 @@ class Trainer:
     def _print_metrics(self, stage_name, epoch, num_epochs, train_loss, train_metrics, val_loss, val_metrics):
         """Prints a formatted summary of the epoch's metrics."""
         print(f"\n--- {stage_name} | Epoch {epoch+1}/{num_epochs} ---")
-        # Train metrics are still proxy classification metrics
-        print(f"  Train -> Loss: {train_loss:.4f} | Acc (proxy): {train_metrics['accuracy']:.4f} | F1 (proxy): {train_metrics['f1_score']:.4f}")
-        # Valid metrics are now proper retrieval metrics
+        print(f"  Train -> Loss: {train_loss:.4f}")
         print(f"  Valid -> Loss: {val_loss:.4f} | R@1: {val_metrics['r1']:.4f} | R@5: {val_metrics['r5']:.4f} | R@10: {val_metrics['r10']:.4f} | mAP: {val_metrics['map']:.4f}")
         print("-" * (len(stage_name) + 20))
 
     def _plot_and_save_history(self):
-        """Plots the training/validation loss and train_acc/validation_R1."""
+        """Plots the training/validation loss."""
         try:
             import matplotlib.pyplot as plt
         except ImportError:
@@ -345,22 +264,12 @@ class Trainer:
             return
 
         epochs = range(1, len(self.history['train_loss']) + 1)
-        # Plot Loss
-        plt.figure(figsize=(12, 5))
-        plt.subplot(1, 2, 1)
+        
+        plt.figure(figsize=(7, 5))
         plt.plot(epochs, self.history['train_loss'], label='Training Loss', color='blue', marker='.')
         plt.plot(epochs, self.history['val_loss'], label='Validation Loss', color='orange', marker='.')
         plt.title('Loss Over Epochs')
         plt.xlabel('Total Epochs'); plt.ylabel('Loss'); plt.legend(); plt.grid(True)
-        
-        # Plot Accuracy
-        plt.subplot(1, 2, 2)
-        plt.plot(epochs, self.history['train_acc'], label='Training Accuracy (Proxy)', color='green', marker='.')
-        # Plot R@1 instead of 'val_acc'
-        plt.plot(epochs, self.history['val_r1'], label='Validation Recall@1', color='red', marker='.')
-        plt.title('Accuracy (Proxy) / Recall@1 Over Epochs')
-        plt.xlabel('Total Epochs'); plt.ylabel('Accuracy / R@1'); plt.legend(); plt.grid(True)
-        
         plt.tight_layout()
         plt.savefig(os.path.join(self.checkpoint_dir, 'training_history.svg'), format='svg')
         plt.close()
@@ -372,23 +281,38 @@ class Trainer:
         start_stage = self.config.RESUME_STAGE if self.config.RESUME and checkpoint else 1
         start_epoch = self.config.RESUME_EPOCH if self.config.RESUME and checkpoint else 0
 
+        # --- MODIFIED: Added sampler and warmup configs ---
         stages = [
             {
                 "name": "STAGE 1: Head Warm-up", "stage_num": 1,
-                "config": {'epochs': self.config.STAGE1_EPOCHS, 'lr': self.config.STAGE1_LR, 'img_size': self.config.STAGE1_IMG_SIZE, 'batch_size': self.config.STAGE1_BATCH_SIZE, 'aug_strength': self.config.STAGE1_AUG_STRENGTH},
+                "config": {
+                    'epochs': self.config.STAGE1_EPOCHS, 'lr': self.config.STAGE1_LR, 
+                    'img_size': self.config.STAGE1_IMG_SIZE, 'batch_size': self.config.STAGE1_BATCH_SIZE,
+                },
                 "accumulation_steps": self.config.STAGE1_ACCUMULATION_STEPS, "setup_fn": self.model.freeze_backbone, "use_scheduler": False
             },
             {
                 "name": "STAGE 2: Early Full Fine-Tuning", "stage_num": 2,
-                "config": {'epochs': self.config.STAGE2_EPOCHS, 'base_lr': self.config.STAGE2_BASE_LR, 'head_lr': self.config.STAGE2_HEAD_LR, 'img_size': self.config.STAGE2_IMG_SIZE, 'batch_size': self.config.STAGE2_BATCH_SIZE, 'aug_strength': self.config.STAGE2_AUG_STRENGTH},
+                "config": {
+                    'epochs': self.config.STAGE2_EPOCHS, 'base_lr': self.config.STAGE2_BASE_LR, 'head_lr': self.config.STAGE2_HEAD_LR, 
+                    'img_size': self.config.STAGE2_IMG_SIZE, 'batch_size': self.config.STAGE2_BATCH_SIZE,
+                    'sampler_p': self.config.STAGE2_SAMPLER_P, 'sampler_k': self.config.STAGE2_SAMPLER_K,
+                    'warmup_ratio': self.config.STAGE2_WARMUP_RATIO
+                },
                 "accumulation_steps": self.config.STAGE2_ACCUMULATION_STEPS, "setup_fn": self.model.unfreeze_backbone, "use_scheduler": True
             },
             {
                 "name": "STAGE 3: Final High-Res Polishing", "stage_num": 3,
-                "config": {'epochs': self.config.STAGE3_EPOCHS, 'base_lr': self.config.STAGE3_BASE_LR, 'head_lr': self.config.STAGE3_HEAD_LR, 'img_size': self.config.STAGE3_IMG_SIZE, 'batch_size': self.config.STAGE3_BATCH_SIZE, 'aug_strength': self.config.STAGE3_AUG_STRENGTH},
+                "config": {
+                    'epochs': self.config.STAGE3_EPOCHS, 'base_lr': self.config.STAGE3_BASE_LR, 'head_lr': self.config.STAGE3_HEAD_LR, 
+                    'img_size': self.config.STAGE3_IMG_SIZE, 'batch_size': self.config.STAGE3_BATCH_SIZE,
+                    'sampler_p': self.config.STAGE3_SAMPLER_P, 'sampler_k': self.config.STAGE3_SAMPLER_K,
+                    'warmup_ratio': self.config.STAGE3_WARMUP_RATIO
+                },
                 "accumulation_steps": self.config.STAGE3_ACCUMULATION_STEPS, "setup_fn": None, "use_scheduler": True
             }
         ]
+        # --- END MODIFICATION ---
 
         for stage_data in stages:
             stage_num, stage_name, stage_config = stage_data["stage_num"], stage_data["name"], stage_data["config"]
@@ -398,12 +322,51 @@ class Trainer:
             
             print(f"\n--- {stage_name} ---")
             if stage_data["setup_fn"]: stage_data["setup_fn"]()
+            
+            # Create dataloaders FIRST (needed for scheduler calculation)
             train_loader, val_loader = create_dataloaders(self.config, stage_config)
             
+            # Setup optimizer
             if self.optimizer is None: self.optimizer = self._get_optimizer(stage_config)
             else: self._adjust_learning_rate(stage_config)
 
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=stage_config['epochs']) if stage_data["use_scheduler"] else None
+            # --- MODIFIED: New Scheduler Logic (step-based, with warmup) ---
+            if stage_data["use_scheduler"]:
+                # Total optimizer steps = (num_batches / accum_steps) * num_epochs
+                # Note: len(train_loader) IS num_batches (from batch_sampler or dataloader)
+                optimizer_steps_per_epoch = len(train_loader) // stage_data["accumulation_steps"]
+                total_optimizer_steps = optimizer_steps_per_epoch * stage_config['epochs']
+                warmup_ratio = stage_config.get('warmup_ratio', 0.0)
+
+                if warmup_ratio > 0:
+                    warmup_steps = int(total_optimizer_steps * warmup_ratio)
+                    cosine_steps = total_optimizer_steps - warmup_steps
+                    
+                    if warmup_steps == 0 or cosine_steps <= 0:
+                         print(f"⚠️  Warmup/Cosine steps invalid (warmup: {warmup_steps}, cosine: {cosine_steps}). Defaulting to CosineAnnealingLR.")
+                         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                            self.optimizer, T_max=total_optimizer_steps, eta_min=1e-7
+                         )
+                    else:
+                        scheduler1 = optim.lr_scheduler.LinearLR(
+                            self.optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps
+                        )
+                        scheduler2 = optim.lr_scheduler.CosineAnnealingLR(
+                            self.optimizer, T_max=cosine_steps, eta_min=1e-7
+                        )
+                        self.scheduler = optim.lr_scheduler.SequentialLR(
+                            self.optimizer, schedulers=[scheduler1, scheduler2], milestones=[warmup_steps]
+                        )
+                        print(f"✅ Using SequentialLR: {warmup_steps} warm-up steps + {cosine_steps} cosine decay steps.")
+                else:
+                    print("✅ Using CosineAnnealingLR (no warmup).")
+                    self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                        self.optimizer, T_max=total_optimizer_steps, eta_min=1e-7
+                    )
+            else:
+                print("No scheduler used for this stage.")
+                self.scheduler = None
+            # --- END MODIFICATION ---
 
             current_stage_start_epoch = 0
             if stage_num == start_stage and start_epoch > 0:
@@ -411,34 +374,74 @@ class Trainer:
                     self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                     print("✅ Optimizer state loaded.")
                 if self.scheduler and checkpoint and 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict'] is not None:
-                    self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                    print("✅ Scheduler state loaded.")
+                    # This is tricky, as we've redefined the scheduler.
+                    # It's safer to restart the scheduler but fast-forward it.
+                    print("Scheduler state found, but re-initializing and fast-forwarding.")
+                    num_steps_to_skip = optimizer_steps_per_epoch * start_epoch
+                    for _ in range(num_steps_to_skip):
+                        self.scheduler.step()
+                    print(f"✅ Scheduler fast-forwarded by {num_steps_to_skip} steps.")
+
                 current_stage_start_epoch = start_epoch
                 print(f">> Starting this stage from epoch {current_stage_start_epoch + 1}")
 
             for epoch in range(current_stage_start_epoch, stage_config['epochs']):
-                train_loss, train_metrics = self._train_one_epoch(train_loader, stage_data["accumulation_steps"])
+                train_loss, _ = self._train_one_epoch(train_loader, stage_data["accumulation_steps"])
+                
                 val_loss, val_metrics = self._validate_one_epoch(val_loader)
-                if self.scheduler: self.scheduler.step()
                 
-                # --- MODIFIED HISTORY APPENDING ---
-                # Append proxy train metrics
+                # --- MODIFIED: Scheduler step is now in _train_one_epoch ---
+                # if self.scheduler: self.scheduler.step() # <-- REMOVED
+                
                 self.history['train_loss'].append(train_loss)
-                self.history['train_acc'].append(train_metrics['accuracy'])
-                
-                # Append validation retrieval metrics
                 self.history['val_loss'].append(val_loss)
                 self.history['val_r1'].append(val_metrics['r1'])
                 self.history['val_r5'].append(val_metrics['r5'])
                 self.history['val_r10'].append(val_metrics['r10'])
                 self.history['val_map'].append(val_metrics['map'])
-                # --- END MODIFIED ---
-                
-                # Print and save
-                self._print_metrics(stage_name, epoch, stage_config['epochs'], train_loss, train_metrics, val_loss, val_metrics)
-                self._save_checkpoint(stage_num, epoch, val_metrics) # This now uses R@1
+                self._print_metrics(stage_name, epoch, stage_config['epochs'], train_loss, None, val_loss, val_metrics)
+                self._save_checkpoint(stage_num, epoch, val_metrics)
 
         print("\n--- Training Finished ---")
         print("📊 Generating training history plots...")
-        self._plot_and_save_history() # This now plots R@1
+        self.plot_and_save_history_svg() # Use SVG for clarity
         print(f"✅ Plots saved to '{self.checkpoint_dir}'")
+
+    # --- Added SVG plotting function ---
+    def plot_and_save_history_svg(self):
+        """Plots the training/validation loss and R@1, saving as SVG."""
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("\n⚠️  Matplotlib not found. Skipping plot generation. Install with 'pip install matplotlib'.")
+            return
+
+        total_epochs = len(self.history['train_loss'])
+        if total_epochs == 0:
+            print("No history to plot.")
+            return
+            
+        epochs = range(1, total_epochs + 1)
+        
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
+        
+        # Plot Loss
+        ax1.plot(epochs, self.history['train_loss'], label='Training Loss', color='blue', marker='.', linestyle='--')
+        ax1.plot(epochs, self.history['val_loss'], label='Validation Loss', color='orange', marker='.')
+        ax1.set_ylabel('Loss')
+        ax1.legend()
+        ax1.grid(True, linestyle=':', alpha=0.7)
+        ax1.set_title('Training & Validation Loss')
+
+        # Plot Recall@1
+        ax2.plot(epochs, self.history['val_r1'], label='R@1', color='green', marker='.')
+        ax2.plot(epochs, self.history['val_map'], label='mAP', color='red', marker='.', linestyle=':')
+        ax2.set_xlabel('Total Epochs')
+        ax2.set_ylabel('Metric')
+        ax2.legend()
+        ax2.grid(True, linestyle=':', alpha=0.7)
+        ax2.set_title('Validation Retrieval Metrics (R@1, mAP)')
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.checkpoint_dir, 'training_history.svg'), format='svg')
+        plt.close()

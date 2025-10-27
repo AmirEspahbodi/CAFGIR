@@ -5,7 +5,7 @@ import os
 
 from src.configs import TrainingConfig
 from src.models.embedding_model import EmbeddingModel
-from src.losses.hybrid_loss import HybridLoss
+from src.losses.proxy_anchor import ProxyLoss
 from src.engine import Trainer
 
 def set_seed(seed_value):
@@ -30,8 +30,8 @@ def main():
 
     # Initialize Model, Loss, and Trainer
     model = EmbeddingModel(config)
-    criterion = HybridLoss(config)
-    trainer = Trainer(model, criterion, config)
+    criterion = ProxyLoss(config)
+    trainer = Trainer(model, criterion, config, "proxy")
 
     # Run the training curriculum
     trainer.run_training_curriculum()
