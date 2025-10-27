@@ -42,7 +42,7 @@ class TrainingConfigBase:
     NUM_WORKERS = 4
 
     # --- Stage 1: Head Warm-up ---
-    STAGE1_EPOCHS = 1
+    STAGE1_EPOCHS = 4
     STAGE1_LR = 1e-3
     STAGE1_IMG_SIZE = 224
     STAGE1_BATCH_SIZE = 32  # Can be larger due to smaller image size

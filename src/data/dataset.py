@@ -163,12 +163,11 @@ def create_dataloaders(config, stage_config):
         train_loader = DataLoader(
             train_dataset,
             batch_sampler=train_batch_sampler,
-            batch_size=None, # Must be None when batch_sampler is provided
+            # We MUST NOT pass batch_size, shuffle, sampler, or drop_last
+            # when batch_sampler is provided, as they are mutually exclusive.
+            # Passing `batch_size=None` fails on older PyTorch versions.
             num_workers=config.NUM_WORKERS,
-            pin_memory=config.PIN_MEMORY,
-            sampler=None,   # Must be None when batch_sampler is provided
-            shuffle=False,  # Must be False when batch_sampler is provided
-            drop_last=False # Sampler handles this
+            pin_memory=config.PIN_MEMORY
         )
     else:
         print("Using standard random shuffling for Training.")
@@ -190,3 +189,4 @@ def create_dataloaders(config, stage_config):
     )
 
     return train_loader, val_loader
+
