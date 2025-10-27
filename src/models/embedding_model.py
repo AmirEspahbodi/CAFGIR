@@ -69,7 +69,8 @@ class EmbeddingModel(nn.Module):
         # 2. Apply PWCA (only during training and if distractor is provided)
         if self.training and x_distractor is not None:
             # Get distractor features (only the last map is needed for PWCA)
-            distractor_features_l = self.backbone(x_distractor)[-1]
+            with torch.no_grad(): # <-- ADD THIS CONTEXT MANAGER
+                distractor_features_l = self.backbone(x_distractor)[-1]
             # Apply PWCA to the coarsest feature map
             f_l = self.pwca(f_l, distractor_features_l)
 
