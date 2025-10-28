@@ -45,7 +45,7 @@ class TrainingConfigBase:
     STAGE1_EPOCHS = 4
     STAGE1_LR = 1e-3
     STAGE1_IMG_SIZE = 224
-    STAGE1_BATCH_SIZE = 64  # Can be larger due to smaller image size
+    STAGE1_BATCH_SIZE = 128  # Can be larger due to smaller image size
     STAGE1_ACCUMULATION_STEPS = 1
     STAGE1_AUG_STRENGTH = 0.0 # No Mixup/CutMix during warm-up
 
@@ -55,7 +55,7 @@ class TrainingConfigBase:
     STAGE2_HEAD_LR = 1e-4 # Differential LR for head
     STAGE2_IMG_SIZE = 320
     STAGE2_BATCH_SIZE = 32 # Must be STAGE2_SAMPLER_P * STAGE2_SAMPLER_K
-    STAGE2_ACCUMULATION_STEPS = 1
+    STAGE2_ACCUMULATION_STEPS = 4
     STAGE2_AUG_STRENGTH = 0.2 # Mild Mixup/CutMix alpha
     # --- New settings for Stage 2 ---
     STAGE2_SAMPLER_P = 8 # Number of classes per batch
@@ -68,7 +68,7 @@ class TrainingConfigBase:
     STAGE3_HEAD_LR = 1e-5
     STAGE3_IMG_SIZE = 384
     STAGE3_BATCH_SIZE = 16 # Must be STAGE3_SAMPLER_P * STAGE3_SAMPLER_K
-    STAGE3_ACCUMULATION_STEPS = 4
+    STAGE3_ACCUMULATION_STEPS = 8
     STAGE3_AUG_STRENGTH = 1.0 # Strong Mixup/CutMix alpha
     # --- New settings for Stage 3 ---
     STAGE3_SAMPLER_P = 4 # Number of classes per batch
