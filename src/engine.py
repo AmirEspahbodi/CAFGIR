@@ -38,7 +38,7 @@ class Trainer:
         current_r1 = val_metrics['r1']
         if current_r1 >= self.best_val_accuracy:
             self.best_val_accuracy = current_r1
-        checkpoint_filename = f"{self.config.BASE_MODEL}_{self.loss_name}_best_model_stage{stage_num}_epoch{epoch+1}_R1@{current_r1:.4f}.pth"
+        checkpoint_filename = f"{self.config.BASE_MODEL}_{self.loss_name}_{stage_num}_epoch{epoch+1}__{self.config.LR}_{self.config.BATCH_SIZE}_R1@{current_r1:.4f}.pth"
         checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
         
         checkpoint = {

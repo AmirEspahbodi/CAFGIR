@@ -182,7 +182,7 @@ def create_dataloaders(config, stage_config):
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=stage_batch_size * 2, # Can use larger batch for val
+        batch_size=stage_batch_size, # Can use larger batch for val
         shuffle=False,
         num_workers=config.NUM_WORKERS,
         pin_memory=config.PIN_MEMORY

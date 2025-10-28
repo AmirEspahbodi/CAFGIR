@@ -43,10 +43,10 @@ class TrainingConfigBase:
 
     # --- Stage 1: Head Warm-up ---
     STAGE1_EPOCHS = 4
-    STAGE1_LR = 1e-3
+    STAGE1_LR = 1e-4
     STAGE1_IMG_SIZE = 224
     STAGE1_BATCH_SIZE = 128  # Can be larger due to smaller image size
-    STAGE1_ACCUMULATION_STEPS = 1
+    STAGE1_ACCUMULATION_STEPS = 4
     STAGE1_AUG_STRENGTH = 0.0 # No Mixup/CutMix during warm-up
 
     # --- Stage 2: Early Full Fine-Tuning ---
@@ -55,7 +55,7 @@ class TrainingConfigBase:
     STAGE2_HEAD_LR = 1e-4 # Differential LR for head
     STAGE2_IMG_SIZE = 320
     STAGE2_BATCH_SIZE = 32 # Must be STAGE2_SAMPLER_P * STAGE2_SAMPLER_K
-    STAGE2_ACCUMULATION_STEPS = 4
+    STAGE2_ACCUMULATION_STEPS = 8
     STAGE2_AUG_STRENGTH = 0.2 # Mild Mixup/CutMix alpha
     # --- New settings for Stage 2 ---
     STAGE2_SAMPLER_P = 8 # Number of classes per batch
@@ -96,6 +96,8 @@ class TrainingConfigBase:
 
 class TrainingConfigTiny(TrainingConfigBase):
     BASE_MODEL = "tiny"
+    BATCH_SIZE = 512
+    LR = "1e-4"
     pass
 
 
@@ -146,7 +148,7 @@ class TrainingConfigDinoV2Base(TrainingConfigBase):
     STAGE2_EPOCHS = 15
     STAGE3_EPOCHS = 20
 
-    STAGE1_IMG_SIZE = 224
+    STAGE1_IMG_SIZE = 518
     STAGE2_IMG_SIZE = 518
     STAGE3_IMG_SIZE = 518
 
